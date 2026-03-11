@@ -78,7 +78,26 @@
       "Bash(cd \"D:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-api\" && dotnet build --no-incremental 2>&1 | grep -E \"error \" | head -5)",
       "Bash(cd \"D:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-api\" && dotnet build --no-incremental 2>&1 | grep \"error\" | head -5)",
       "Bash(cd \"D:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-api\" && dotnet build --no-incremental 2>&1 | grep -i \"error\" | head -10)",
-      "Bash(cd \"D:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-app\" && npx tsc --noEmit 2>&1 | grep -i \"error\" | head -10)"
+      "Bash(cd \"D:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-app\" && npx tsc --noEmit 2>&1 | grep -i \"error\" | head -10)",
+      "Bash(find \"D:\\\\_dev\\\\_2026_workshop\\\\_refund_ai\" -name \"*.sql\" -type f 2>/dev/null | head -20)",
+      "Bash(find \"D:\\\\_dev\\\\_2026_workshop\\\\_refund_ai\\\\_phototype\" -name \"*.sql\" | xargs grep -l \"BOM_BOI\\\\|BOM_M29\" 2>/dev/null)",
+      "Bash(ls -la \"D:\\\\_dev\\\\_2026_workshop\\\\_refund_ai\\\\_phototype\\\\TaxRefund\\\\Database\\\\\" | grep -i \"\\\\.sql\")",
+      "Bash(ls \"D:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-app/src/app/\\(protected\\)/\")",
+      "Bash(cd \"D:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-app\" && npx tsc --noEmit --pretty 2>&1 | tail -30)",
+      "Bash(cd \"D:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-api\" && dotnet build 2>&1 | tail -15)",
+      "Bash(find \"D:\\\\_dev\\\\_2026_workshop\\\\_refund_ai\\\\_sorcecode\\\\imp-api\\\\SqlScripts\" -type f -name \"*.sql\" 2>/dev/null | head -20)",
+      "Bash(find \"D:\\\\_dev\\\\_2026_workshop\\\\_refund_ai\\\\_sorcecode\\\\imp-api\" -type f \\\\\\( -name \"*.sql\" -o -name \"*.cs\" \\\\\\) | xargs grep -l \"BOM_M29\\\\|BOM_BOI\" 2>/dev/null)",
+      "Bash(find D:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-api -type f -name \"*oi*\" -o -name \"*Boi*\" 2>/dev/null | grep -v obj)",
+      "Bash(grep -r \"bom_boi\" D:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-api --include=\"*.cs\" 2>/dev/null | head -20)",
+      "Bash(find D:/_dev/_2026_workshop/_refund_ai/_sorcecode -maxdepth 2 -name \"*.md\" -type f 2>/dev/null | grep -v node_modules)",
+      "Bash(find D:/_dev/_2026_workshop/_refund_ai -name \"*data-structure*\" -o -name \"*refund-types*\" -o -name \"*migration*\" -o -name \"*backup*\" 2>/dev/null | head -10)",
+      "Bash(cd \"D:\\\\_dev\\\\_2026_workshop\\\\_refund_ai\\\\_sorcecode\\\\imp-api\" && dotnet build -o /tmp/imp-api-check 2>&1 | tail -5)",
+      "Bash(ls \"D:\\\\_dev\\\\_2026_workshop\\\\_refund_ai\\\\_sorcecode\\\\imp-app\\\\src\\\\app\\\\\\(protected\\)\\\\formula\\\\\")",
+      "Bash(find \"D:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-api/Models\" -type f -name \"*.cs\" 2>/dev/null | head -20)",
+      "Bash(cd \"D:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-api\" && dotnet build 2>&1 | tail -30)",
+      "Bash(cd \"D:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-api\" && dotnet build 2>&1 | grep -E \"error CS|Build succeeded|0 Error\")",
+      "Bash(cd \"D:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-api\" && dotnet build --no-incremental 2>&1 | grep -E \"error CS|Warning\\\\\\(s\\\\\\)|Error\\\\\\(s\\\\\\)\")",
+      "Bash(cd \"D:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-api\" && dotnet build --no-incremental 2>&1 | grep \"error \" | grep -v \"MSB302\")"
     ]
   }
 }

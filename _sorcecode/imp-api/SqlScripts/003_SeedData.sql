@@ -92,12 +92,12 @@ BEGIN
     VALUES ('FORMULA', N'สูตรการผลิต', 'FlaskConical', '/formula', 6)
 END
 
-IF NOT EXISTS (SELECT 1 FROM [imp].[Menu] WHERE [MenuCode] = 'FORMULA_29')
+IF NOT EXISTS (SELECT 1 FROM [imp].[Menu] WHERE [MenuCode] = 'FORMULA_M29')
 BEGIN
     INSERT INTO [imp].[Menu] ([ParentId], [MenuCode], [MenuName], [Icon], [Route], [SortOrder])
     VALUES (
         (SELECT [Id] FROM [imp].[Menu] WHERE [MenuCode] = 'FORMULA'),
-        'FORMULA_29', N'สูตรการผลิต มาตรา 29', 'FlaskConical', '/formula/section29', 1
+        'FORMULA_M29', N'สูตรการผลิต มาตรา 29', 'FlaskConical', '/formula/m29', 1
     )
 END
 

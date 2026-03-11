@@ -90,6 +90,10 @@ builder.Services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
 builder.Services.AddScoped<IPasswordResetRepository, PasswordResetRepository>();
 builder.Services.AddScoped<IImportExcelRepository, ImportExcelRepository>();
 builder.Services.AddScoped<IExportExcelRepository, ExportExcelRepository>();
+builder.Services.AddScoped<IBomM29Repository, BomM29Repository>();
+builder.Services.AddScoped<IBomBoiRepository, BomBoiRepository>();
+builder.Services.AddScoped<IStockLotRepository, StockLotRepository>();
+builder.Services.AddScoped<IStockCuttingRepository, StockCuttingRepository>();
 
 // DI — Services
 builder.Services.AddScoped<IJwtService, JwtService>();
@@ -100,6 +104,9 @@ builder.Services.AddScoped<IImportExcelService, ImportExcelService>();
 builder.Services.AddScoped<IExportExcelService, ExportExcelService>();
 builder.Services.AddScoped<IImportManageService, ImportManageService>();
 builder.Services.AddScoped<IExportManageService, ExportManageService>();
+builder.Services.AddScoped<IFormulaM29Service, FormulaM29Service>();
+builder.Services.AddScoped<IFormulaBoiService, FormulaBoiService>();
+builder.Services.AddScoped<IPrivilege19TvisService, Privilege19TvisService>();
 
 // Background — cleanup expired tokens every 6 hours
 builder.Services.AddHostedService<TokenCleanupService>();

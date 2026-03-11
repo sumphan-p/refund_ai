@@ -24,10 +24,10 @@ public class ExportManageController : ControllerBase
         [FromQuery] string? productCode,
         [FromQuery] string? buyerName,
         [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 20)
+        [FromQuery] int pageSize = 10)
     {
         if (page < 1) page = 1;
-        if (pageSize < 1) pageSize = 20;
+        if (pageSize < 1) pageSize = 10;
         if (pageSize > 100) pageSize = 100;
 
         var result = await _service.SearchAsync(declarNo, invoiceNo, productCode, buyerName, page, pageSize);
