@@ -1,0 +1,90 @@
+# Walkthrough: Auth + Role-Based Menu Permissions — imp-api
+
+## สรุป
+
+สร้างระบบ Authentication + จัดการสิทธิ์ตามเมนูสำหรับ `imp-api` สำเร็จ — **Build ✅ 0 errors**
+
+---
+
+## ไฟล์ที่สร้าง/แก้ไข (34 ไฟล์)
+
+### SQL Scripts (3 ไฟล์)
+| ไฟล์ | หน้าที่ |
+|------|---------|
+| [001_CreateSchema.sql](file:///d:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-api/SqlScripts/001_CreateSchema.sql) | สร้าง schema `imp` |
+| [002_CreateAuthTables.sql](file:///d:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-api/SqlScripts/002_CreateAuthTables.sql) | 7 ตาราง + indexes |
+| [003_SeedData.sql](file:///d:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-api/SqlScripts/003_SeedData.sql) | Admin/User roles, 10 menus, admin user |
+
+### Architecture
+
+```mermaid
+graph TB
+    subgraph Controllers
+        AC["AuthController<br/>7 endpoints"]
+        MC["MenuController<br/>1 endpoint"]
+        ADM["AdminController<br/>13 endpoints"]
+    end
+
+    subgraph Services
+        AS[AuthService]
+        JS[JwtService]
+        ES[EmailService]
+        ADS[AdminService]
+    end
+
+    subgraph Repositories
+        UR[UserRepo]
+        RR[RoleRepo]
+        MR[MenuRepo]
+        PR[PermissionRepo]
+        RTR[RefreshTokenRepo]
+        PRTR[PasswordResetRepo]
+    end
+
+    AC --> AS
+    AS --> JS
+    AS --> ES
+    AS --> UR & RR & RTR & PRTR
+    MC --> MR & PR
+    ADM --> ADS
+    ADS --> UR & RR & MR & PR
+    UR & RR & MR & PR & RTR & PRTR --> DB[("SQL Server<br/>IMP_DB / imp schema")]
+```
+
+### API Endpoints
+
+| Group | Endpoint | Method | Auth |
+|-------|----------|--------|------|
+| Auth | `/api/auth/login` | POST | — |
+| Auth | `/api/auth/register` | POST | — |
+| Auth | `/api/auth/forgot-password` | POST | — |
+| Auth | `/api/auth/reset-password` | POST | — |
+| Auth | `/api/auth/change-password` | POST | Bearer |
+| Auth | `/api/auth/refresh` | POST | — |
+| Auth | `/api/auth/logout` | POST | — |
+| Menu | `/api/menu` | GET | Bearer |
+| Admin | `/api/admin/users` | GET/POST | Admin |
+| Admin | `/api/admin/users/{id}` | PUT | Admin |
+| Admin | `/api/admin/users/{id}/toggle-active` | PUT | Admin |
+| Admin | `/api/admin/users/{id}/roles` | POST | Admin |
+| Admin | `/api/admin/roles` | GET/POST | Admin |
+| Admin | `/api/admin/roles/{id}` | PUT | Admin |
+| Admin | `/api/admin/roles/{id}/permissions` | GET/PUT | Admin |
+| Admin | `/api/admin/menus` | GET/POST | Admin |
+| Admin | `/api/admin/menus/{id}` | PUT | Admin |
+
+### Build Result
+```
+Build succeeded.
+    2 Warning(s)  — NU1902 MimeKit advisory (ไม่กระทบ)
+    0 Error(s)
+```
+
+---
+
+## ขั้นตอนถัดไป (ต้อง User ดำเนินการ)
+
+1. **Run SQL Scripts** บน `IMP_DB` — ตามลำดับ 001 → 002 → 003
+2. **ตั้ง password** ใน `appsettings.json` → `ConnectionStrings:DefaultConnection`
+3. **`dotnet run`** → เปิด Swagger ที่ `http://localhost:5209/swagger`
+4. **ทดสอบ Login** — username: `admin` / password: `P@ssw0rd`

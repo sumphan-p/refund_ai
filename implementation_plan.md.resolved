@@ -1,0 +1,268 @@
+# Auth System + Role-Based Menu Permissions for imp-api
+
+ระบบ Authentication + จัดการสิทธิ์ตามเมนู สำหรับ `imp-api` โดยใช้ต้นแบบจาก `_phototype/next_api`
+
+## User Review Required
+
+> [!IMPORTANT]
+> **Database Schema**: ใช้ **schema `imp`** แทน `dbo` เพื่อแยก namespace — ตาราง: `imp.Users`, `imp.Roles`, `imp.Menu` ฯลฯ
+
+> [!IMPORTANT]
+> **Permission Model**: แต่ละ Role × Menu จะมีสิทธิ์ 5 แบบ: `Visible`, `CanCreate`, `CanEdit`, `CanReadOnly`, `CanDelete` (เปลี่ยน Update → Delete เพราะ Edit ครอบคลุม Update แล้ว) — ถ้าต้องการ `CanUpdate` แยกจาก `CanEdit` แจ้งได้ครับ
+
+> [!WARNING]
+> **SMTP Config**: ส่วน Email (MailKit) ต้องกรอก SMTP config ใน `appsettings.json` — ถ้ายังไม่มี SMTP server จะยัง skip ส่งอีเมลจริง (log แทน)
+
+---
+
+## Proposed Changes
+
+### Database — SQL Scripts
+
+#### [NEW] [001_CreateSchema.sql](file:///d:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-api/SqlScripts/001_CreateSchema.sql)
+
+สร้าง schema `imp`:
+```sql
+CREATE SCHEMA imp;
+```
+
+#### [NEW] [002_CreateAuthTables.sql](file:///d:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-api/SqlScripts/002_CreateAuthTables.sql)
+
+7 ตาราง:
+
+```mermaid
+erDiagram
+    Users ||--o{ UserRoles : has
+    Roles ||--o{ UserRoles : has
+    Roles ||--o{ RoleMenuPermissions : has
+    Menu ||--o{ RoleMenuPermissions : has
+    Menu ||--o{ Menu : "ParentId (self-ref)"
+    Users ||--o{ RefreshTokens : has
+    Users ||--o{ PasswordResetTokens : has
+
+    Users {
+        uniqueidentifier Id PK
+        nvarchar UserName UK
+        nvarchar PasswordHash
+        nvarchar DisplayName
+        nvarchar Email
+        bit IsActive
+        datetime2 CreatedAt
+        datetime2 UpdatedAt
+    }
+
+    Roles {
+        int Id PK
+        nvarchar RoleName UK
+        nvarchar Description
+        bit IsActive
+    }
+
+    UserRoles {
+        uniqueidentifier UserId FK
+        int RoleId FK
+    }
+
+    Menu {
+        int Id PK
+        int ParentId FK
+        nvarchar MenuCode UK
+        nvarchar MenuName
+        nvarchar Icon
+        nvarchar Route
+        int SortOrder
+        bit IsActive
+    }
+
+    RoleMenuPermissions {
+        int Id PK
+        int RoleId FK
+        int MenuId FK
+        bit Visible
+        bit CanCreate
+        bit CanEdit
+        bit CanReadOnly
+        bit CanDelete
+    }
+
+    RefreshTokens {
+        uniqueidentifier Id PK
+        uniqueidentifier UserId FK
+        nvarchar Token
+        datetime2 ExpiresAt
+        datetime2 RevokedAt
+    }
+
+    PasswordResetTokens {
+        uniqueidentifier Id PK
+        uniqueidentifier UserId FK
+        nvarchar Token
+        datetime2 ExpiresAt
+        datetime2 UsedAt
+    }
+```
+
+#### [NEW] [003_SeedData.sql](file:///d:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-api/SqlScripts/003_SeedData.sql)
+
+Seed: Role "Admin" + default menus + Admin permissions (all = true) + admin user (admin/P@ssw0rd)
+
+---
+
+### NuGet Packages
+
+#### [MODIFY] [imp-api.csproj](file:///d:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-api/imp-api.csproj)
+
+เพิ่ม packages:
+- `BCrypt.Net-Next` — hash password
+- `Microsoft.AspNetCore.Authentication.JwtBearer` — JWT auth
+- `System.IdentityModel.Tokens.Jwt` — generate JWT
+- `MailKit` — send reset password email
+
+---
+
+### Models (7 ไฟล์ใหม่)
+
+#### [NEW] Models/User.cs
+#### [NEW] Models/Role.cs
+#### [NEW] Models/UserRole.cs
+#### [NEW] Models/Menu.cs
+#### [NEW] Models/RoleMenuPermission.cs
+#### [NEW] Models/RefreshToken.cs
+#### [NEW] Models/PasswordResetToken.cs
+
+---
+
+### Helpers
+
+#### [NEW] Helpers/PasswordHasher.cs
+BCrypt hash/verify (จาก prototype — workFactor: 12)
+
+---
+
+### Repositories (6 คู่ Interface + Implementation)
+
+| Interface | Implementation | หน้าที่ |
+|-----------|---------------|---------|
+| `IUserRepository` | `UserRepository` | CRUD Users, GetByUserName, UpdatePassword |
+| `IRoleRepository` | `RoleRepository` | CRUD Roles, GetUserRoles |
+| `IMenuRepository` | `MenuRepository` | CRUD Menus (tree structure) |
+| `IRoleMenuPermissionRepository` | `RoleMenuPermissionRepository` | CRUD permissions per role×menu |
+| `IRefreshTokenRepository` | `RefreshTokenRepository` | Create, GetByToken, Revoke, RevokeAll |
+| `IPasswordResetRepository` | `PasswordResetRepository` | Create, GetByToken, MarkUsed, InvalidateAll |
+
+ทุก repository ใช้ `IDbConnection` (Dapper) inject ผ่าน DI ตาม convention ของ imp-api
+
+---
+
+### Services (4 คู่)
+
+| Interface | Implementation | หน้าที่ |
+|-----------|---------------|---------|
+| `IJwtService` | `JwtService` | Generate access token + refresh token |
+| `IAuthService` | `AuthService` | Login, Register, Remember, ForgotPassword, ResetPassword, ChangePassword, Refresh, Logout |
+| `IEmailService` | `EmailService` | Send password reset email (MailKit) |
+| `IAdminService` | `AdminService` | Manage users/roles/menu permissions (Admin only) |
+
+---
+
+### DTOs
+
+#### Auth DTOs (ใหม่)
+- `LoginRequest` (UserName, Password, RememberMe)
+- `RegisterRequest` (UserName, Password, DisplayName, Email)
+- `ForgotPasswordRequest`, `ResetPasswordRequest`, `ChangePasswordRequest`
+- `RefreshRequest`, `LogoutRequest`
+- `AuthResponse` (AccessToken, RefreshToken, ExpiresIn, User, Menus+Permissions)
+- `ErrorResponse`, `MessageResponse`
+
+#### Admin DTOs (ใหม่)
+- `CreateUserRequest`, `UpdateUserRequest`, `AssignRoleRequest`
+- `CreateRoleRequest`, `UpdateRoleRequest`
+- `SetMenuPermissionRequest`
+- `MenuPermissionResponse`, `UserListResponse`, `RoleListResponse`
+
+---
+
+### Controllers (3 ตัวใหม่)
+
+#### [NEW] Controllers/AuthController.cs
+| Method | Endpoint | หน้าที่ |
+|--------|----------|---------|
+| POST | `api/auth/login` | Login (+ RememberMe → longer refresh token) |
+| POST | `api/auth/register` | Register |
+| POST | `api/auth/forgot-password` | ส่ง email reset |
+| POST | `api/auth/reset-password` | Reset password by token |
+| POST | `api/auth/change-password` | เปลี่ยนรหัส (ต้อง login) |
+| POST | `api/auth/refresh` | Refresh token rotation |
+| POST | `api/auth/logout` | Revoke refresh token |
+
+#### [NEW] Controllers/MenuController.cs
+| Method | Endpoint | หน้าที่ |
+|--------|----------|---------|
+| GET | `api/menu` | Get menus + permissions ของ current user |
+
+#### [NEW] Controllers/AdminController.cs — `[Authorize(Roles = "Admin")]`
+| Method | Endpoint | หน้าที่ |
+|--------|----------|---------|
+| GET | `api/admin/users` | รายการ users |
+| POST | `api/admin/users` | สร้าง user |
+| PUT | `api/admin/users/{id}` | แก้ไข user |
+| PUT | `api/admin/users/{id}/toggle-active` | เปิด/ปิด user |
+| POST | `api/admin/users/{id}/roles` | กำหนด roles |
+| GET | `api/admin/roles` | รายการ roles |
+| POST | `api/admin/roles` | สร้าง role |
+| PUT | `api/admin/roles/{id}` | แก้ไข role |
+| GET | `api/admin/roles/{id}/permissions` | ดู permissions |
+| PUT | `api/admin/roles/{id}/permissions` | แก้ permissions (batch) |
+| GET | `api/admin/menus` | รายการ menus |
+| POST | `api/admin/menus` | สร้าง menu |
+| PUT | `api/admin/menus/{id}` | แก้ไข menu |
+
+---
+
+### Configuration
+
+#### [MODIFY] [Program.cs](file:///d:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-api/Program.cs)
+
+เพิ่ม:
+- JWT Authentication middleware
+- CORS policy (allow imp-app `localhost:3000`)
+- Custom validation error format (422)
+- Global exception handler (500)
+- DI registration ทุก Repository + Service
+- `app.UseAuthentication()` + `app.UseAuthorization()`
+
+#### [MODIFY] [appsettings.json](file:///d:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-api/appsettings.json)
+
+เพิ่ม sections: `Jwt`, `ResetPassword`, `Smtp`
+
+#### [NEW] [imp-api.http](file:///d:/_dev/_2026_workshop/_refund_ai/_sorcecode/imp-api/imp-api.http) (overwrite)
+
+HTTP test file สำหรับทดสอบทุก endpoint
+
+---
+
+## Verification Plan
+
+### Automated Tests
+โปรเจกต์ยังไม่มี test framework — จะ verify ด้วย:
+
+1. **Build check**:
+   ```bash
+   cd d:\_dev\_2026_workshop\_refund_ai\_sorcecode\imp-api
+   dotnet build
+   ```
+
+2. **Swagger UI check** (browser test):
+   - เปิด `http://localhost:5209/swagger`
+   - ตรวจสอบว่า endpoints ทั้งหมดแสดงถูกต้อง
+
+3. **API endpoint testing** ผ่าน `imp-api.http`:
+   - Register → Login → Refresh → Change Password → Logout
+   - Admin: Create role, Create menu, Set permissions
+   - Get menus with permissions
+
+### Manual Verification
+- ขอให้ User **run SQL scripts** บน `IMP_DB` เพื่อสร้างตาราง
+- ขอให้ User ตรวจสอบ **Swagger UI** ว่า endpoints ถูกต้องตามที่ออกแบบ
+- ขอให้ User ทดสอบ **Login flow** ด้วย admin/P@ssw0rd ผ่าน Swagger

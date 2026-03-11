@@ -1,0 +1,37 @@
+services:
+  imp-api:
+    image: mcr.microsoft.com/dotnet/aspnet:10.0.3
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5080:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ConnectionStrings__DefaultConnection=Server=${API_DB_SERVER:-192.168.10.131,63913};Database=${API_DB_NAME:-IMP_DB};User Id=${API_DB_USER:-sa};Password=${API_DB_PASSWORD};TrustServerCertificate=True
+    volumes:
+      - ./datas/api:/app
+    working_dir: /app
+    command: ["dotnet", "imp-api.dll"]
+    networks:
+      - network-tools
+
+  imp-app:
+    image: node:22-slim
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      - NODE_ENV=production
+      - HOSTNAME=0.0.0.0
+      - API_BASE_URL=http://imp-api:8080
+    volumes:
+      - ./datas/app:/app
+    working_dir: /app
+    command: ["node", "server.js"]
+    depends_on:
+      - imp-api
+    networks:
+      - network-tools
+
+networks:
+  network-tools:
+    driver: bridge

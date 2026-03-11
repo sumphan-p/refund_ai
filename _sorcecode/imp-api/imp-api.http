@@ -1,0 +1,165 @@
+@imp-api_HostAddress = http://localhost:5209
+
+### Test DB Connection
+GET {{imp-api_HostAddress}}/api/testdb
+
+### =============================================
+### Auth — Register
+### =============================================
+POST {{imp-api_HostAddress}}/api/auth/register
+Content-Type: application/json
+
+{
+  "userName": "testuser",
+  "password": "Test1234",
+  "displayName": "ทดสอบผู้ใช้",
+  "email": "test@example.com"
+}
+
+### =============================================
+### Auth — Login
+### =============================================
+POST {{imp-api_HostAddress}}/api/auth/login
+Content-Type: application/json
+
+{
+  "userName": "admin",
+  "password": "P@ssw0rd",
+  "rememberMe": false
+}
+
+### =============================================
+### Auth — Login with Remember Me
+### =============================================
+POST {{imp-api_HostAddress}}/api/auth/login
+Content-Type: application/json
+
+{
+  "userName": "admin",
+  "password": "P@ssw0rd",
+  "rememberMe": true
+}
+
+### =============================================
+### Auth — Forgot Password
+### =============================================
+POST {{imp-api_HostAddress}}/api/auth/forgot-password
+Content-Type: application/json
+
+{
+  "userName": "admin"
+}
+
+### =============================================
+### Auth — Reset Password (replace token)
+### =============================================
+POST {{imp-api_HostAddress}}/api/auth/reset-password
+Content-Type: application/json
+
+{
+  "token": "PASTE_TOKEN_HERE",
+  "password": "NewPassword123"
+}
+
+### =============================================
+### Auth — Change Password (requires Bearer token)
+### =============================================
+POST {{imp-api_HostAddress}}/api/auth/change-password
+Content-Type: application/json
+Authorization: Bearer PASTE_ACCESS_TOKEN_HERE
+
+{
+  "currentPassword": "P@ssw0rd",
+  "newPassword": "NewPass1234"
+}
+
+### =============================================
+### Auth — Refresh Token
+### =============================================
+POST {{imp-api_HostAddress}}/api/auth/refresh
+Content-Type: application/json
+
+{
+  "refreshToken": "PASTE_REFRESH_TOKEN_HERE"
+}
+
+### =============================================
+### Auth — Logout
+### =============================================
+POST {{imp-api_HostAddress}}/api/auth/logout
+Content-Type: application/json
+
+{
+  "refreshToken": "PASTE_REFRESH_TOKEN_HERE"
+}
+
+### =============================================
+### Menu — Get my menus with permissions
+### =============================================
+GET {{imp-api_HostAddress}}/api/menu
+Authorization: Bearer PASTE_ACCESS_TOKEN_HERE
+
+### =============================================
+### Admin — Get all users
+### =============================================
+GET {{imp-api_HostAddress}}/api/admin/users
+Authorization: Bearer PASTE_ACCESS_TOKEN_HERE
+
+### =============================================
+### Admin — Create user
+### =============================================
+POST {{imp-api_HostAddress}}/api/admin/users
+Content-Type: application/json
+Authorization: Bearer PASTE_ACCESS_TOKEN_HERE
+
+{
+  "userName": "operator1",
+  "password": "Op1234",
+  "displayName": "Operator 1",
+  "email": "op1@example.com",
+  "roleIds": [2]
+}
+
+### =============================================
+### Admin — Get all roles
+### =============================================
+GET {{imp-api_HostAddress}}/api/admin/roles
+Authorization: Bearer PASTE_ACCESS_TOKEN_HERE
+
+### =============================================
+### Admin — Create role
+### =============================================
+POST {{imp-api_HostAddress}}/api/admin/roles
+Content-Type: application/json
+Authorization: Bearer PASTE_ACCESS_TOKEN_HERE
+
+{
+  "roleName": "Operator",
+  "description": "ผู้ปฏิบัติงาน"
+}
+
+### =============================================
+### Admin — Get role permissions
+### =============================================
+GET {{imp-api_HostAddress}}/api/admin/roles/1/permissions
+Authorization: Bearer PASTE_ACCESS_TOKEN_HERE
+
+### =============================================
+### Admin — Set role permissions (batch)
+### =============================================
+PUT {{imp-api_HostAddress}}/api/admin/roles/2/permissions
+Content-Type: application/json
+Authorization: Bearer PASTE_ACCESS_TOKEN_HERE
+
+{
+  "permissions": [
+    { "menuId": 1, "visible": true, "canCreate": false, "canEdit": false, "canReadOnly": true, "canDelete": false },
+    { "menuId": 2, "visible": true, "canCreate": true, "canEdit": true, "canReadOnly": true, "canDelete": false }
+  ]
+}
+
+### =============================================
+### Admin — Get all menus
+### =============================================
+GET {{imp-api_HostAddress}}/api/admin/menus
+Authorization: Bearer PASTE_ACCESS_TOKEN_HERE

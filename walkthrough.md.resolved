@@ -1,0 +1,158 @@
+# สรุปการศึกษา `_phototype` Directory
+
+โฟลเดอร์ `_phototype` เป็น **โปรเจกต์ต้นแบบ (Prototype)** ของระบบ Tax Refund AI ประกอบด้วย **3 ส่วนหลัก** และ **Docker Compose** สำหรับ deploy
+
+---
+
+## 📁 ภาพรวมโครงสร้าง
+
+```
+_phototype/
+├── TaxRefund/          ← .NET WinForms app (ระบบหลัก)
+├── TaxRefund_Excel/    ← ไฟล์ Excel ตัวอย่าง
+└── next_api/           ← .NET 10 Auth API
+```
+
+---
+
+## 1. TaxRefund — ระบบจัดการคืนภาษี (WinForms)
+
+**.NET WinForms** application เชื่อมต่อ **SQL Server** ผ่าน `System.Data.SqlClient`
+
+### หน้าจอหลัก
+
+| Form | หน้าที่ |
+|------|---------|
+| `FrmLogin` | เข้าสู่ระบบ (ตรวจ Users table ตรงๆ — ยังไม่ hash password) |
+| `FrmMainMenu` | เมนูหลัก — เปิดฟอร์มย่อยต่างๆ |
+| `FrmPOList` | รายการ Purchase Order |
+| `FrmDisplayStockCardM29` | แสดง Stock Card มาตรา 29 |
+
+### โมดูลหลัก
+
+#### 📦 FrmUpload — นำเข้า/ส่งออก Excel
+- [FrmImportExcel.cs](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/TaxRefund/ImportReminder/FrmUpload/FrmImportExcel.cs) (71KB) — นำเข้าข้อมูลจาก Excel
+- [FrmExportExcelAll.cs](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/TaxRefund/ImportReminder/FrmUpload/FrmExportExcelAll.cs) (32KB) — ส่งออกข้อมูลทั้งหมดเป็น Excel
+- [FrmImportManagement.cs](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/TaxRefund/ImportReminder/FrmUpload/FrmImportManagement.cs) (41KB) — จัดการข้อมูลนำเข้า
+- [FrmExportManagement.cs](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/TaxRefund/ImportReminder/FrmUpload/FrmExportManagement.cs) (33KB) — จัดการข้อมูลส่งออก
+
+#### 🏭 Management/M29 — จัดการสิทธิประโยชน์ภาษี
+- [FrmManagementM29.cs](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/TaxRefund/ImportReminder/Management/M29/FrmManagementM29.cs) (137KB) — จัดการมาตรา 29
+- [FrmManagementBOI.cs](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/TaxRefund/ImportReminder/Management/M29/FrmManagementBOI.cs) (136KB) — จัดการ BOI
+- [FrmManagementTXC.cs](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/TaxRefund/ImportReminder/Management/M29/FrmManagementTXC.cs) (30KB) — จัดการ TXC
+
+#### 🧾 Bom — สูตรการผลิต
+- `FrmBoiCard` / `FrmBomBOI` / `FrmBomM29` — จัดการ BOM สำหรับ BOI และ มาตรา 29
+- `FrmSearchBomBOI` / `FrmSearchBomM29` — ค้นหาสูตร BOM
+
+### Models (14 ไฟล์)
+รวมถึง [POManager.cs](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/TaxRefund/ImportReminder/Models/POManager.cs) (43KB — จัดการ PO ขนาดใหญ่), [SapManager.cs](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/TaxRefund/ImportReminder/Models/SapManager.cs), [Connection.cs](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/TaxRefund/ImportReminder/Models/Connection.cs), [EncryptManager.cs](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/TaxRefund/ImportReminder/Models/EncryptManager.cs), [IRfcTableExtentions.cs](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/TaxRefund/ImportReminder/Models/IRfcTableExtentions.cs) (SAP RFC integration)
+
+### Database Scripts
+
+| Script | คำอธิบาย |
+|--------|----------|
+| [CreateTable_BoiCard.sql](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/TaxRefund/Database/CreateTable_BoiCard.sql) | ตาราง `BOI_CARD` — ข้อมูลบัตรส่งเสริม BOI (สิทธิ์ ม.25,26,28,31,34,36) |
+| [CreateTable_ExportAll.sql](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/TaxRefund/Database/CreateTable_ExportAll.sql) | ตารางข้อมูลส่งออกทั้งหมด |
+| [CreateTable_MaterialStockCard.sql](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/TaxRefund/Database/CreateTable_MaterialStockCard.sql) | ตาราง `MaterialStockCard` — Stock Card วัตถุดิบ |
+| [sp_GetNextRunningNo.sql](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/TaxRefund/Database/sp_GetNextRunningNo.sql) | Stored procedure สร้างเลข running `Name-YYMM-0000` |
+
+### สูตรคำนวณ Stock Card (จาก [CLAUDE.md](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/TaxRefund/CLAUDE.md))
+```
+ONHAND:  คงเหลือ = ยกมา (CurrentStock)
+EXPORT1: คงเหลือ = คงเหลือ(ONHAND) - จ่ายออก(EXPORT1)
+EXPORT2: คงเหลือ = คงเหลือ(EXPORT1) - จ่ายออก(EXPORT2)
+...
+```
+
+---
+
+## 2. next_api — Authentication API (.NET 10)
+
+**Clean architecture** ใช้ pattern: **Controller → Service → Repository** พร้อม **Dapper** (Micro ORM)
+
+### Tech Stack
+| Package | เวอร์ชัน | หน้าที่ |
+|---------|----------|---------|
+| .NET 10 | — | Framework |
+| Dapper | 2.1.66 | Micro ORM |
+| BCrypt.Net | 4.1.0 | Hash password |
+| JWT Bearer | 10.0.3 | Authentication |
+| MailKit | 4.15.0 | ส่งอีเมล reset password |
+| SQL Server | 6.1.4 | Database |
+| Swagger | 10.1.4 | API Docs |
+
+### Architecture
+
+```mermaid
+graph LR
+    A["AuthController"] --> B["AuthService"]
+    B --> C["UserRepository"]
+    B --> D["RefreshTokenRepository"]
+    B --> E["PasswordResetRepository"]
+    B --> F["JwtService"]
+    B --> G["EmailService"]
+    C --> H[("SQL Server<br/>AuthDb")]
+    D --> H
+    E --> H
+```
+
+### API Endpoints — `POST /api/auth/*`
+
+| Endpoint | หน้าที่ | Response |
+|----------|---------|----------|
+| `/login` | เข้าสู่ระบบ | [AuthResponse](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/next_api/Services/AuthService.cs#124-151) (access + refresh token) |
+| `/register` | สมัครสมาชิก | [AuthResponse](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/next_api/Services/AuthService.cs#124-151) (201) |
+| `/forgot-password` | ขอ reset password | `MessageResponse` (+ resetLink ใน Dev mode) |
+| `/reset-password` | รีเซ็ตรหัสผ่าน | `MessageResponse` |
+| `/refresh` | ต่ออายุ token (rotation) | [AuthResponse](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/next_api/Services/AuthService.cs#124-151) |
+| `/logout` | ออกจากระบบ (revoke refresh token) | 204 No Content |
+
+### Security Features
+- **BCrypt** password hashing
+- **JWT** access token (15 นาที default) + **Refresh token rotation** (7 วัน)
+- Revoke all tokens on password reset
+- Race condition protection (SQL unique constraint fallback)
+- Username normalization (`Trim().ToLowerInvariant()`)
+- Prevents username enumeration ใน forgot-password
+
+### Database ([002_CreateTables.sql](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/next_api/SqlScripts/002_CreateTables.sql))
+
+| Table | คำอธิบาย |
+|-------|----------|
+| `Users` | ข้อมูลผู้ใช้ (GUID PK, unique username) |
+| `RefreshTokens` | Refresh tokens (FK → Users, CASCADE delete) |
+| `PasswordResetTokens` | Token สำหรับ reset password |
+
+---
+
+## 3. TaxRefund_Excel — ไฟล์ตัวอย่าง
+
+| ไฟล์ | ขนาด |
+|------|------|
+| [Export_010126_To310126.xls](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/TaxRefund_Excel/Export_010126_To310126.xls) | 961 KB — ข้อมูลส่งออก ม.ค. 2569 |
+| [Import_20260101.xls](file:///d:/_dev/_2026_workshop/_refund_ai/_phototype/TaxRefund_Excel/Import_20260101.xls) | 137 KB — ข้อมูลนำเข้า 1 ม.ค. 2569 |
+
+---
+
+## 4. Docker Compose — Deployment
+
+[docker-compose.yml](file:///d:/_dev/_2026_workshop/_refund_ai/docker-compose.yml) deploy **2 services**:
+
+| Service | Image | Port | หน้าที่ |
+|---------|-------|------|---------|
+| `imp-api` | `dotnet/aspnet:10.0.3` | 5080 → 8080 | .NET API backend |
+| `imp-app` | `node:22-slim` | 3000 → 3000 | Next.js frontend |
+
+> [!IMPORTANT]
+> `imp-app` (Node.js) เรียก API ผ่าน `http://imp-api:8080` ภายใน Docker network
+
+---
+
+## 🔍 ข้อสังเกตสำคัญ
+
+1. **TaxRefund (WinForms)** เป็นระบบเดิมขนาดใหญ่ — ฟอร์มหลักมีโค้ด 100KB+ ต่อไฟล์ มี **SAP integration** (`SapManager`, `IRfcTableExtentions`)
+2. **next_api** เป็น Auth API ที่ออกแบบมาดี ใช้ Repository Pattern + DI + Clean error handling
+3. **ยังไม่มี business logic API** — `next_api` มีแค่ Auth ยังไม่มี API สำหรับ Tax Refund business
+4. **DatabaseHelper** ในตัวเดิมเก็บ password แบบ plaintext (comment บอก "ในระบบจริงควร hash password ก่อน")
+5. Docker compose ถูกออกแบบมาสำหรับ production deploy ด้วย `imp-api` + `imp-app`
