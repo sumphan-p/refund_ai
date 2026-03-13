@@ -117,12 +117,54 @@ public class Privilege19TvisController : ControllerBase
         }
     }
 
-    /// <summary>Sync import_excel → stock_lot (create lots from imports)</summary>
+    /// <summary>Sync import_excel → stock_m29_lot (create lots from imports)</summary>
     [HttpPost("sync-lots")]
     public async Task<IActionResult> SyncLots()
     {
         var userName = User.Identity?.Name ?? "system";
         var result = await _service.SyncImportToStockLotAsync(userName);
+        return Ok(result);
+    }
+
+    /// <summary>Get export lines by exact DeclarNo</summary>
+    [HttpGet("export-lines")]
+    public async Task<IActionResult> GetExportLines([FromQuery] string declarNo)
+    {
+        if (string.IsNullOrWhiteSpace(declarNo))
+            return BadRequest(new ErrorResponse { Error = "VALIDATION_ERROR", Message = "กรุณากรอกเลขที่ใบขนขาออก" });
+
+        var result = await _service.GetExportLinesByDeclarNoAsync(declarNo);
+        return Ok(result);
+    }
+
+    /// <summary>Get BOM formula with calculated quantities</summary>
+    [HttpGet("bom-formula")]
+    public async Task<IActionResult> GetBomFormula([FromQuery] string formulaNo, [FromQuery] decimal exportQty = 0)
+    {
+        try
+        {
+            var result = await _service.GetBomFormulaAsync(formulaNo, exportQty);
+            return Ok(result);
+        }
+        catch (AppException ex)
+        {
+            return BadRequest(new ErrorResponse { Error = ex.Error, Message = ex.Message });
+        }
+    }
+
+    /// <summary>Get available import lots for a material (FIFO order)</summary>
+    [HttpGet("available-lots")]
+    public async Task<IActionResult> GetAvailableLots([FromQuery] string rawMaterialCode)
+    {
+        var result = await _service.GetAvailableLotsForMaterialAsync(rawMaterialCode);
+        return Ok(result);
+    }
+
+    /// <summary>Get stock card entries for a material</summary>
+    [HttpGet("stock-card")]
+    public async Task<IActionResult> GetStockCard([FromQuery] string rawMaterialCode)
+    {
+        var result = await _service.GetStockCardByMaterialAsync(rawMaterialCode);
         return Ok(result);
     }
 

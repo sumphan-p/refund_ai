@@ -16,7 +16,7 @@ public class StockLotRepository : IStockLotRepository
     public async Task<IEnumerable<StockLot>> GetActiveLotsFifoAsync(string rawMaterialCode, string privilegeType, DateTime exportDate)
     {
         const string sql = @"
-            SELECT * FROM imp.stock_lot
+            SELECT * FROM imp.stock_m29_lot
             WHERE RawMaterialCode = @RawMaterialCode
               AND PrivilegeType = @PrivilegeType
               AND Status = 'ACTIVE'
@@ -29,20 +29,20 @@ public class StockLotRepository : IStockLotRepository
     public async Task<StockLot?> GetByIdAsync(int id)
     {
         return await _db.QuerySingleOrDefaultAsync<StockLot>(
-            "SELECT * FROM imp.stock_lot WHERE Id = @Id", new { Id = id });
+            "SELECT * FROM imp.stock_m29_lot WHERE Id = @Id", new { Id = id });
     }
 
     public async Task<StockLot?> GetByImportDeclarAsync(string importDeclarNo, int importItemNo)
     {
         return await _db.QuerySingleOrDefaultAsync<StockLot>(
-            "SELECT * FROM imp.stock_lot WHERE ImportDeclarNo = @ImportDeclarNo AND ImportItemNo = @ImportItemNo",
+            "SELECT * FROM imp.stock_m29_lot WHERE ImportDeclarNo = @ImportDeclarNo AND ImportItemNo = @ImportItemNo",
             new { ImportDeclarNo = importDeclarNo, ImportItemNo = importItemNo });
     }
 
     public async Task<int> InsertAsync(StockLot lot)
     {
         const string sql = @"
-            INSERT INTO imp.stock_lot (ImportDeclarNo, ImportItemNo, ImportDate, PrivilegeType,
+            INSERT INTO imp.stock_m29_lot (ImportDeclarNo, ImportItemNo, ImportDate, PrivilegeType,
                 RawMaterialCode, ProductCode, ProductDescription, Unit,
                 QtyOriginal, QtyUsed, QtyBalance, QtyTransferred,
                 UnitPrice, CIFValueTHB, DutyRate, DutyPerUnit, TotalDutyVAT,
@@ -84,7 +84,7 @@ public class StockLotRepository : IStockLotRepository
     public async Task UpdateQtyAsync(int id, decimal qtyUsed, decimal qtyBalance, string status)
     {
         const string sql = @"
-            UPDATE imp.stock_lot SET QtyUsed = @QtyUsed, QtyBalance = @QtyBalance, Status = @Status
+            UPDATE imp.stock_m29_lot SET QtyUsed = @QtyUsed, QtyBalance = @QtyBalance, Status = @Status
             WHERE Id = @Id";
 
         await _db.ExecuteAsync(sql, new { Id = id, QtyUsed = qtyUsed, QtyBalance = qtyBalance, Status = status });
@@ -98,7 +98,7 @@ public class StockLotRepository : IStockLotRepository
         p.Add("Offset", offset);
         p.Add("PageSize", pageSize);
 
-        var sql = $@"SELECT * FROM imp.stock_lot{where}
+        var sql = $@"SELECT * FROM imp.stock_m29_lot{where}
                      ORDER BY ImportDate ASC
                      OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY";
 
@@ -109,7 +109,7 @@ public class StockLotRepository : IStockLotRepository
     {
         var p = new DynamicParameters();
         var where = BuildWhere(importDeclarNo, rawMaterialCode, privilegeType, status, p);
-        var sql = $"SELECT COUNT(*) FROM imp.stock_lot{where}";
+        var sql = $"SELECT COUNT(*) FROM imp.stock_m29_lot{where}";
         return await _db.ExecuteScalarAsync<int>(sql, p);
     }
 

@@ -11,4 +11,8 @@ public interface IPrivilege19TvisService
     Task CancelCuttingAsync(string exportDeclarNo, int exportItemNo, string userName);
     Task<SyncStockLotResponse> SyncImportToStockLotAsync(string userName);
     Task<PagedResponse<StockLotListItem>> SearchLotsAsync(string? importDeclarNo, string? rawMaterialCode, string? status, int page, int pageSize);
+    Task<List<ExportLineItem>> GetExportLinesByDeclarNoAsync(string declarNo);
+    Task<BomFormulaInfo> GetBomFormulaAsync(string formulaNo, decimal exportQty);
+    Task<List<StockLotListItem>> GetAvailableLotsForMaterialAsync(string rawMaterialCode);
+    Task<List<StockCardEntry>> GetStockCardByMaterialAsync(string rawMaterialCode);
 }

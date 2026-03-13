@@ -16,7 +16,7 @@ public class StockCuttingRepository : IStockCuttingRepository
     public async Task<int> InsertAsync(StockCutting cutting)
     {
         const string sql = @"
-            INSERT INTO imp.stock_cutting (StockLotId, ExportDeclarNo, ExportItemNo, ExportDate, PrivilegeType,
+            INSERT INTO imp.stock_m29_cutting (StockLotId, ExportDeclarNo, ExportItemNo, ExportDate, PrivilegeType,
                 ProductionFormulaNo, BomDetailNo, RawMaterialCode, Unit,
                 ExportQty, Ratio, Scrap, QtyRequired, QtyCut,
                 DutyPerUnit, DutyRefund, Status, CreatedBy, CreatedDate)
@@ -52,8 +52,8 @@ public class StockCuttingRepository : IStockCuttingRepository
     {
         const string sql = @"
             SELECT sc.*, sl.ImportDeclarNo, sl.ImportItemNo, sl.ImportDate
-            FROM imp.stock_cutting sc
-            JOIN imp.stock_lot sl ON sc.StockLotId = sl.Id
+            FROM imp.stock_m29_cutting sc
+            JOIN imp.stock_m29_lot sl ON sc.StockLotId = sl.Id
             WHERE sc.ExportDeclarNo = @ExportDeclarNo AND sc.ExportItemNo = @ExportItemNo
             ORDER BY sl.ImportDate ASC";
 
@@ -63,13 +63,13 @@ public class StockCuttingRepository : IStockCuttingRepository
     public async Task<StockCutting?> GetByIdAsync(int id)
     {
         return await _db.QuerySingleOrDefaultAsync<StockCutting>(
-            "SELECT * FROM imp.stock_cutting WHERE Id = @Id", new { Id = id });
+            "SELECT * FROM imp.stock_m29_cutting WHERE Id = @Id", new { Id = id });
     }
 
     public async Task UpdateStatusAsync(int id, string status, string? confirmedBy)
     {
         const string sql = @"
-            UPDATE imp.stock_cutting SET Status = @Status, ConfirmedBy = @ConfirmedBy, ConfirmedDate = SYSUTCDATETIME()
+            UPDATE imp.stock_m29_cutting SET Status = @Status, ConfirmedBy = @ConfirmedBy, ConfirmedDate = SYSUTCDATETIME()
             WHERE Id = @Id";
 
         await _db.ExecuteAsync(sql, new { Id = id, Status = status, ConfirmedBy = confirmedBy });
@@ -78,14 +78,14 @@ public class StockCuttingRepository : IStockCuttingRepository
     public async Task DeleteByExportAsync(string exportDeclarNo, int exportItemNo)
     {
         await _db.ExecuteAsync(
-            "DELETE FROM imp.stock_cutting WHERE ExportDeclarNo = @ExportDeclarNo AND ExportItemNo = @ExportItemNo",
+            "DELETE FROM imp.stock_m29_cutting WHERE ExportDeclarNo = @ExportDeclarNo AND ExportItemNo = @ExportItemNo",
             new { ExportDeclarNo = exportDeclarNo, ExportItemNo = exportItemNo });
     }
 
     public async Task<string?> GetCuttingStatusForExportAsync(string exportDeclarNo, int exportItemNo)
     {
         return await _db.ExecuteScalarAsync<string?>(
-            "SELECT TOP 1 Status FROM imp.stock_cutting WHERE ExportDeclarNo = @ExportDeclarNo AND ExportItemNo = @ExportItemNo",
+            "SELECT TOP 1 Status FROM imp.stock_m29_cutting WHERE ExportDeclarNo = @ExportDeclarNo AND ExportItemNo = @ExportItemNo",
             new { ExportDeclarNo = exportDeclarNo, ExportItemNo = exportItemNo });
     }
 }

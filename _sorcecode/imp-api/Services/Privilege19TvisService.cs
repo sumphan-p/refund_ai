@@ -66,7 +66,7 @@ public class Privilege19TvisService : IPrivilege19TvisService
                    e.ProductCode, e.DescriptionTh1, e.DescriptionEn1,
                    e.QtyDeclar, e.QtyDeclarUnit, e.NetWeight, e.FOBTHB,
                    e.Section19BisNo, e.ImportTaxIncentiveId, e.ImportDeclarNo,
-                   (SELECT TOP 1 sc.Status FROM imp.stock_cutting sc
+                   (SELECT TOP 1 sc.Status FROM imp.stock_m29_cutting sc
                     WHERE sc.ExportDeclarNo = e.DeclarNo AND sc.ExportItemNo = e.ItemDeclarNo) AS CuttingStatus
             FROM imp.export_excel e{where}
             ORDER BY e.ReleaseDate DESC, e.DeclarNo, e.ItemDeclarNo
@@ -208,8 +208,8 @@ public class Privilege19TvisService : IPrivilege19TvisService
                    sc.RawMaterialCode, sc.Unit, sc.QtyCut,
                    sc.DutyPerUnit, sc.DutyRefund, sl.QtyBalance AS LotBalanceAfter,
                    sc.Status
-            FROM imp.stock_cutting sc
-            JOIN imp.stock_lot sl ON sc.StockLotId = sl.Id
+            FROM imp.stock_m29_cutting sc
+            JOIN imp.stock_m29_lot sl ON sc.StockLotId = sl.Id
             WHERE sc.ExportDeclarNo = @ExportDeclarNo AND sc.ExportItemNo = @ExportItemNo
             ORDER BY sl.ImportDate ASC",
             new { ExportDeclarNo = exportDeclarNo, ExportItemNo = exportItemNo });
@@ -271,7 +271,7 @@ public class Privilege19TvisService : IPrivilege19TvisService
             if (lot == null) continue;
 
             var cardSql = @"
-                INSERT INTO imp.stock_card (TransactionDate, TransactionType, PrivilegeType,
+                INSERT INTO imp.stock_m29_card (TransactionDate, TransactionType, PrivilegeType,
                     ImportDeclarNo, ImportItemNo, ImportDate,
                     ExportDeclarNo, ExportItemNo,
                     RawMaterialCode, ProductCode, ProductDescription, Unit,
@@ -340,17 +340,17 @@ public class Privilege19TvisService : IPrivilege19TvisService
     }
 
     // =============================================
-    // Sync import_excel → stock_lot
+    // Sync import_excel → stock_m29_lot
     // =============================================
     public async Task<SyncStockLotResponse> SyncImportToStockLotAsync(string userName)
     {
-        // Get import records that have Section 19 bis privilege and not yet in stock_lot
+        // Get import records that have Section 19 bis privilege and not yet in stock_m29_lot
         var sql = @"
             SELECT i.*
             FROM imp.import_excel i
             WHERE i.UsePrivilege IS NOT NULL AND i.UsePrivilege != ''
               AND NOT EXISTS (
-                  SELECT 1 FROM imp.stock_lot sl
+                  SELECT 1 FROM imp.stock_m29_lot sl
                   WHERE sl.ImportDeclarNo = i.DeclarNo AND sl.ImportItemNo = i.ItemDeclarNo
               )
             ORDER BY i.StampDateTime ASC, i.DeclarNo, i.ItemDeclarNo";
@@ -438,5 +438,134 @@ public class Privilege19TvisService : IPrivilege19TvisService
             Page = page,
             PageSize = pageSize,
         };
+    }
+
+    // =============================================
+    // Get export lines by exact DeclarNo
+    // =============================================
+    public async Task<List<ExportLineItem>> GetExportLinesByDeclarNoAsync(string declarNo)
+    {
+        var sql = @"
+            SELECT e.Id, e.DeclarNo, e.ItemDeclarNo, e.ReleaseDate AS ExportDate,
+                   e.InvoiceNo, e.ProductCode, e.DescriptionTh1,
+                   e.QtyDeclar, e.QtyDeclarUnit, e.NetWeight, e.FOBTHB,
+                   e.ImportDeclarNo, e.Section19BisNo, e.ImportTaxIncentiveId,
+                   (SELECT TOP 1 sc.Status FROM imp.stock_m29_cutting sc
+                    WHERE sc.ExportDeclarNo = e.DeclarNo AND sc.ExportItemNo = e.ItemDeclarNo) AS CuttingStatus
+            FROM imp.export_excel e
+            WHERE e.DeclarNo = @DeclarNo
+              AND e.Section19Bis IS NOT NULL AND e.Section19Bis != ''
+            ORDER BY e.ItemDeclarNo";
+
+        var items = await _db.QueryAsync<ExportLineItem>(sql, new { DeclarNo = declarNo.Trim() });
+        return items.ToList();
+    }
+
+    // =============================================
+    // Get BOM formula info with calculated quantities
+    // =============================================
+    public async Task<BomFormulaInfo> GetBomFormulaAsync(string formulaNo, decimal exportQty)
+    {
+        var bomHd = await _bomRepo.GetByFormulaNoAsync(formulaNo.Trim())
+            ?? throw new AppException("FORMULA_NOT_FOUND", $"ไม่พบสูตรการผลิต: {formulaNo}");
+
+        var bomDetails = await _bomRepo.GetDetailsByHdIdAsync(bomHd.Id);
+
+        // Query on-hand balance for each distinct raw material
+        var materialCodes = bomDetails
+            .Where(d => !string.IsNullOrWhiteSpace(d.RawMaterialCode))
+            .Select(d => d.RawMaterialCode!)
+            .Distinct()
+            .ToList();
+
+        var onHandMap = new Dictionary<string, decimal>();
+        if (materialCodes.Count > 0)
+        {
+            var onHandRows = await _db.QueryAsync<(string RawMaterialCode, decimal QtyBalance)>(
+                "SELECT RawMaterialCode, QtyBalance FROM imp.stock_m29_on_hand WHERE RawMaterialCode IN @Codes",
+                new { Codes = materialCodes });
+            foreach (var row in onHandRows)
+                onHandMap[row.RawMaterialCode] = row.QtyBalance;
+        }
+
+        return new BomFormulaInfo
+        {
+            ProductionFormulaNo = bomHd.ProductionFormulaNo,
+            DescriptionTh1 = bomHd.DescriptionTh1,
+            Details = bomDetails.Select(d => new BomFormulaDetail
+            {
+                No = d.No,
+                RawMaterialCode = d.RawMaterialCode,
+                ProductType = d.ProductType,
+                Unit = d.Unit,
+                Ratio = d.Ratio,
+                Scrap = d.Scrap,
+                QtyFromFormula = exportQty * (d.Ratio ?? 0),
+                QtyRequired = exportQty * ((d.Ratio ?? 0) + (d.Scrap ?? 0)),
+                QtyOnHand = !string.IsNullOrWhiteSpace(d.RawMaterialCode) && onHandMap.TryGetValue(d.RawMaterialCode, out var bal) ? bal : null,
+                Remark = d.Remark,
+            }).ToList(),
+        };
+    }
+
+    // =============================================
+    // Get available lots for a material (FIFO order)
+    // =============================================
+    public async Task<List<StockLotListItem>> GetAvailableLotsForMaterialAsync(string rawMaterialCode)
+    {
+        var lots = await _lotRepo.GetActiveLotsFifoAsync(rawMaterialCode, "19TVIS", DateTime.UtcNow);
+
+        return lots.Select(l => new StockLotListItem
+        {
+            Id = l.Id,
+            ImportDeclarNo = l.ImportDeclarNo,
+            ImportItemNo = l.ImportItemNo,
+            ImportDate = l.ImportDate.ToString("yyyy-MM-dd"),
+            RawMaterialCode = l.RawMaterialCode,
+            ProductDescription = l.ProductDescription,
+            Unit = l.Unit,
+            QtyOriginal = l.QtyOriginal,
+            QtyUsed = l.QtyUsed,
+            QtyBalance = l.QtyBalance,
+            DutyPerUnit = l.DutyPerUnit,
+            Status = l.Status,
+            ExpiryDate = l.ExpiryDate?.ToString("yyyy-MM-dd"),
+            DaysRemaining = l.ExpiryDate.HasValue ? Math.Max(0, (l.ExpiryDate.Value - DateTime.UtcNow).Days) : 0,
+        }).ToList();
+    }
+
+    // =============================================
+    // Get stock card by material
+    // =============================================
+    public async Task<List<StockCardEntry>> GetStockCardByMaterialAsync(string rawMaterialCode)
+    {
+        var sql = @"
+            SELECT Id, TransactionType, TransactionDate, ImportDeclarNo, ImportItemNo, ImportDate,
+                   PrivilegeType, ExportDeclarNo, ExportItemNo,
+                   RawMaterialCode, ProductCode, Unit, QtyIn, QtyOut, QtyBalance
+            FROM imp.stock_m29_card
+            WHERE RawMaterialCode = @RawMaterialCode AND PrivilegeType = '19TVIS'
+            ORDER BY Id DESC";
+
+        var cards = await _db.QueryAsync<dynamic>(sql, new { RawMaterialCode = rawMaterialCode });
+
+        return cards.Select(c => new StockCardEntry
+        {
+            Id = (int)c.Id,
+            TransactionType = (string?)c.TransactionType,
+            TransactionDate = c.TransactionDate != null ? ((DateTime)c.TransactionDate).ToString("yyyy-MM-dd") : null,
+            ImportDeclarNo = (string?)c.ImportDeclarNo,
+            ImportItemNo = (int?)c.ImportItemNo,
+            ImportDate = c.ImportDate != null ? ((DateTime)c.ImportDate).ToString("yyyy-MM-dd") : null,
+            PrivilegeType = (string?)c.PrivilegeType,
+            ExportDeclarNo = (string?)c.ExportDeclarNo,
+            ExportItemNo = (int?)c.ExportItemNo,
+            RawMaterialCode = (string?)c.RawMaterialCode,
+            ProductCode = (string?)c.ProductCode,
+            Unit = (string)c.Unit,
+            QtyIn = (decimal?)c.QtyIn,
+            QtyOut = (decimal?)c.QtyOut,
+            QtyBalance = (decimal)c.QtyBalance,
+        }).ToList();
     }
 }
