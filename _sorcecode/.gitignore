@@ -17,4 +17,5 @@ Desktop.ini
 # Claude Code
 .claude/
 
-error
+_error
+_plan
