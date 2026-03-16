@@ -12,22 +12,24 @@ public class Privilege19TvisService : IPrivilege19TvisService
     private readonly IStockLotRepository _lotRepo;
     private readonly IStockCuttingRepository _cuttingRepo;
     private readonly IBomM29Repository _bomRepo;
+    private readonly IM29BatchRepository _m29BatchRepo;
 
-    public Privilege19TvisService(IDbConnection db, IStockLotRepository lotRepo, IStockCuttingRepository cuttingRepo, IBomM29Repository bomRepo)
+    public Privilege19TvisService(IDbConnection db, IStockLotRepository lotRepo, IStockCuttingRepository cuttingRepo, IBomM29Repository bomRepo, IM29BatchRepository m29BatchRepo)
     {
         _db = db;
         _lotRepo = lotRepo;
         _cuttingRepo = cuttingRepo;
         _bomRepo = bomRepo;
+        _m29BatchRepo = m29BatchRepo;
     }
 
     // =============================================
     // Search exports eligible for Section 19 bis
     // =============================================
-    public async Task<PagedResponse<ExportItemForCutting>> SearchExportsAsync(string? declarNo, string? productCode, string? dateFrom, string? dateTo, int page, int pageSize)
+    public async Task<PagedResponse<ExportItemForCutting>> SearchExportsAsync(string? declarNo, string? productCode, string? dateFrom, string? dateTo, bool uncutOnly, int page, int pageSize)
     {
         var p = new DynamicParameters();
-        var conditions = new List<string> { "e.Section19Bis IS NOT NULL AND e.Section19Bis != ''" };
+        var conditions = new List<string> { "e.Section19Bis = N'Y' AND e.Section19BisNo <> N'00000000-00' AND e.Section19BisNo <> N'' AND e.CurrentStatus = N'0409'" };
 
         if (!string.IsNullOrWhiteSpace(declarNo))
         {
@@ -41,35 +43,47 @@ public class Privilege19TvisService : IPrivilege19TvisService
         }
         if (!string.IsNullOrWhiteSpace(dateFrom))
         {
-            conditions.Add("e.ReleaseDate >= @DateFrom");
+            conditions.Add("TRY_CONVERT(DATE, e.LoadingDate, 103) >= @DateFrom");
             p.Add("DateFrom", dateFrom.Trim());
         }
         if (!string.IsNullOrWhiteSpace(dateTo))
         {
-            conditions.Add("e.ReleaseDate <= @DateTo");
+            conditions.Add("TRY_CONVERT(DATE, e.LoadingDate, 103) <= @DateTo");
             p.Add("DateTo", dateTo.Trim());
         }
+
+        var joinSql = @"
+            LEFT JOIN (
+                SELECT bi.ExportExcelId
+                FROM imp.m29_batch_item bi
+                INNER JOIN imp.m29_batch_header bh ON bh.Id = bi.BatchHeaderId
+                WHERE bh.Status <> N'CANCELLED'
+            ) bi ON bi.ExportExcelId = e.Id";
+
+        // uncutOnly: กรองเฉพาะรายการที่ยังไม่ถูกจัดชุด (server-side)
+        if (uncutOnly)
+            conditions.Add("bi.ExportExcelId IS NULL");
 
         var where = " WHERE " + string.Join(" AND ", conditions);
 
         // Count
-        var countSql = $"SELECT COUNT(*) FROM imp.export_excel e{where}";
+        var countSql = $"SELECT COUNT(*) FROM imp.export_excel e{joinSql}{where}";
         var totalCount = await _db.ExecuteScalarAsync<int>(countSql, p);
 
-        // Data with cutting status
+        // Data
         var offset = (page - 1) * pageSize;
         p.Add("Offset", offset);
         p.Add("PageSize", pageSize);
 
         var dataSql = $@"
-            SELECT e.Id, e.DeclarNo, e.ItemDeclarNo, e.ReleaseDate AS ExportDate,
+            SELECT e.Id, e.DeclarNo, e.ItemDeclarNo, e.LoadingDate AS ExportDate,
                    e.ProductCode, e.DescriptionTh1, e.DescriptionEn1,
                    e.QtyDeclar, e.QtyDeclarUnit, e.NetWeight, e.FOBTHB,
+                   e.InvoiceNo, e.BuyerName,
                    e.Section19BisNo, e.ImportTaxIncentiveId, e.ImportDeclarNo,
-                   (SELECT TOP 1 sc.Status FROM imp.stock_m29_cutting sc
-                    WHERE sc.ExportDeclarNo = e.DeclarNo AND sc.ExportItemNo = e.ItemDeclarNo) AS CuttingStatus
-            FROM imp.export_excel e{where}
-            ORDER BY e.ReleaseDate DESC, e.DeclarNo, e.ItemDeclarNo
+                   CASE WHEN bi.ExportExcelId IS NOT NULL THEN N'BATCHED' END AS CuttingStatus
+            FROM imp.export_excel e{joinSql}{where}
+            ORDER BY TRY_CONVERT(DATE, e.LoadingDate, 103) DESC, e.DeclarNo, e.ItemDeclarNo
             OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY";
 
         var items = await _db.QueryAsync<ExportItemForCutting>(dataSql, p);
@@ -102,6 +116,27 @@ public class Privilege19TvisService : IPrivilege19TvisService
             throw new AppException("FORMULA_EMPTY", "สูตรการผลิตไม่มีรายการวัตถุดิบ");
 
         var exportDate = DateTime.Parse(request.ExportDate);
+
+        // Generate batchDocNo: "001/69" format (running/พ.ศ. 2 หลัก)
+        var buddhistYear = (DateTime.UtcNow.Year + 543).ToString();
+        var yearSuffix = buddhistYear[^2..]; // last 2 digits
+        int runningNo;
+        if (request.StartDocRunning.HasValue && request.StartDocRunning.Value > 0)
+        {
+            runningNo = request.StartDocRunning.Value;
+        }
+        else
+        {
+            var maxRunning = await _cuttingRepo.GetMaxRunningNoAsync(yearSuffix);
+            runningNo = maxRunning + 1;
+        }
+        var batchDocNo = $"{runningNo:D3}/{yearSuffix}";
+
+        // Business rule: max 11 export items per batch
+        var existingCount = await _cuttingRepo.CountExportItemsByBatchDocNoAsync(batchDocNo);
+        if (existingCount >= 10)
+            throw new AppException("BATCH_LIMIT", "1 ชุดเอกสาร ต้องมีใบขนขาออกไม่เกิน 11 รายการ");
+
         var allCuttings = new List<CuttingResultItem>();
         decimal totalDutyRefund = 0;
         decimal totalQtyRequired = 0;
@@ -113,7 +148,7 @@ public class Privilege19TvisService : IPrivilege19TvisService
 
             var ratio = bom.Ratio ?? 0;
             var scrap = bom.Scrap ?? 0;
-            var qtyRequired = request.ExportQty * (ratio + scrap);
+            var qtyRequired = request.ExportQty * (ratio + scrap) / 100;
             totalQtyRequired += qtyRequired;
 
             // Get FIFO lots
@@ -146,6 +181,7 @@ public class Privilege19TvisService : IPrivilege19TvisService
                     QtyCut = cutQty,
                     DutyPerUnit = lot.DutyPerUnit,
                     DutyRefund = dutyRefund,
+                    BatchDocNo = batchDocNo,
                     CreatedBy = userName,
                 };
 
@@ -156,6 +192,66 @@ public class Privilege19TvisService : IPrivilege19TvisService
                 var newQtyBalance = lot.QtyBalance - cutQty;
                 var newStatus = newQtyBalance <= 0 ? "DEPLETED" : "ACTIVE";
                 await _lotRepo.UpdateQtyAsync(lot.Id, newQtyUsed, newQtyBalance, newStatus);
+
+                // Insert stock_m29_batch record
+                await _db.ExecuteAsync(@"
+                    INSERT INTO imp.stock_m29_batch
+                        (StockLotId, ExportDeclarNo, ExportItemNo, ExportDate,
+                         PrivilegeType, ProductionFormulaNo, BomDetailNo,
+                         RawMaterialCode, Unit, ExportQty, Ratio, Scrap,
+                         QtyRequired, QtyCut, DutyPerUnit, DutyRefund,
+                         Status, CreatedBy, CreatedDate)
+                    VALUES
+                        (@StockLotId, @ExportDeclarNo, @ExportItemNo, @ExportDate,
+                         @PrivilegeType, @ProductionFormulaNo, @BomDetailNo,
+                         @RawMaterialCode, @Unit, @ExportQty, @Ratio, @Scrap,
+                         @QtyRequired, @QtyCut, @DutyPerUnit, @DutyRefund,
+                         @Status, @CreatedBy, SYSUTCDATETIME())",
+                    new {
+                        cutting.StockLotId, cutting.ExportDeclarNo, cutting.ExportItemNo,
+                        ExportDate = exportDate, cutting.PrivilegeType,
+                        cutting.ProductionFormulaNo, cutting.BomDetailNo,
+                        cutting.RawMaterialCode, cutting.Unit, cutting.ExportQty,
+                        cutting.Ratio, cutting.Scrap, cutting.QtyRequired,
+                        QtyCut = cutQty, lot.DutyPerUnit, DutyRefund = dutyRefund,
+                        Status = "PENDING", CreatedBy = userName
+                    });
+
+                // Insert stock_m29_card OUT record
+                await _db.ExecuteAsync(@"
+                    INSERT INTO imp.stock_m29_card
+                        (TransactionDate, TransactionType, PrivilegeType,
+                         ImportDeclarNo, ImportItemNo, ImportDate,
+                         ExportDeclarNo, ExportItemNo,
+                         RawMaterialCode, ProductCode, ProductDescription, Unit,
+                         QtyOut, QtyBalance,
+                         DutyAmount, ImportTaxIncId, ProductionFormulaNo,
+                         LotId, LotImportDeclarNo, CreatedBy, CreatedDate, Remark)
+                    VALUES
+                        (@TransactionDate, 'OUT', '19TVIS',
+                         @ImportDeclarNo, @ImportItemNo, @ImportDate,
+                         @ExportDeclarNo, @ExportItemNo,
+                         @RawMaterialCode, @ProductCode, @ProductDescription, @Unit,
+                         @QtyOut, @QtyBalance,
+                         @DutyAmount, @ImportTaxIncId, @ProductionFormulaNo,
+                         @LotId, @LotImportDeclarNo, @CreatedBy, SYSUTCDATETIME(), @Remark)",
+                    new {
+                        TransactionDate = exportDate,
+                        lot.ImportDeclarNo, lot.ImportItemNo, lot.ImportDate,
+                        cutting.ExportDeclarNo, cutting.ExportItemNo,
+                        cutting.RawMaterialCode,
+                        lot.ProductCode, lot.ProductDescription,
+                        cutting.Unit,
+                        QtyOut = cutQty,
+                        QtyBalance = newQtyBalance,
+                        DutyAmount = dutyRefund,
+                        lot.ImportTaxIncId,
+                        cutting.ProductionFormulaNo,
+                        LotId = lot.Id,
+                        LotImportDeclarNo = lot.ImportDeclarNo,
+                        CreatedBy = userName,
+                        Remark = $"FIFO cut: {request.ExportDeclarNo}-{request.ExportItemNo}"
+                    });
 
                 allCuttings.Add(new CuttingResultItem
                 {
@@ -182,6 +278,7 @@ public class Privilege19TvisService : IPrivilege19TvisService
 
         return new CutStock19TvisResponse
         {
+            BatchDocNo = batchDocNo,
             Cuttings = allCuttings,
             TotalQtyRequired = totalQtyRequired,
             TotalQtyCut = allCuttings.Sum(c => c.QtyCut),
@@ -208,7 +305,7 @@ public class Privilege19TvisService : IPrivilege19TvisService
                    sc.RawMaterialCode, sc.Unit, sc.QtyCut,
                    sc.DutyPerUnit, sc.DutyRefund, sl.QtyBalance AS LotBalanceAfter,
                    sc.Status
-            FROM imp.stock_m29_cutting sc
+            FROM imp.stock_m29_batch sc
             JOIN imp.stock_m29_lot sl ON sc.StockLotId = sl.Id
             WHERE sc.ExportDeclarNo = @ExportDeclarNo AND sc.ExportItemNo = @ExportItemNo
             ORDER BY sl.ImportDate ASC",
@@ -237,7 +334,7 @@ public class Privilege19TvisService : IPrivilege19TvisService
         {
             ExportDeclarNo = exportDeclarNo,
             ExportItemNo = exportItemNo,
-            ExportDate = export.ReleaseDate,
+            ExportDate = export.LoadingDate,
             ProductCode = export.ProductCode,
             ExportQty = export.QtyDeclar,
             ProductionFormulaNo = null,
@@ -261,54 +358,15 @@ public class Privilege19TvisService : IPrivilege19TvisService
             if (c.Status != "PENDING")
                 throw new AppException("INVALID_STATUS", $"รายการตัด #{c.Id} ไม่อยู่ในสถานะรอยืนยัน");
 
+            // Update stock_m29_batch status
             await _cuttingRepo.UpdateStatusAsync(c.Id, "CONFIRMED", userName);
         }
 
-        // Insert stock card OUT records
-        foreach (var c in cuttings)
-        {
-            var lot = await _lotRepo.GetByIdAsync(c.StockLotId);
-            if (lot == null) continue;
-
-            var cardSql = @"
-                INSERT INTO imp.stock_m29_card (TransactionDate, TransactionType, PrivilegeType,
-                    ImportDeclarNo, ImportItemNo, ImportDate,
-                    ExportDeclarNo, ExportItemNo,
-                    RawMaterialCode, ProductCode, ProductDescription, Unit,
-                    QtyOut, QtyBalance,
-                    DutyAmount, ImportTaxIncId, ProductionFormulaNo,
-                    LotId, LotImportDeclarNo, CreatedBy, CreatedDate, Remark)
-                VALUES (@TransactionDate, 'OUT', '19TVIS',
-                    @ImportDeclarNo, @ImportItemNo, @ImportDate,
-                    @ExportDeclarNo, @ExportItemNo,
-                    @RawMaterialCode, @ProductCode, @ProductDescription, @Unit,
-                    @QtyOut, @QtyBalance,
-                    @DutyAmount, @ImportTaxIncId, @ProductionFormulaNo,
-                    @LotId, @LotImportDeclarNo, @CreatedBy, SYSUTCDATETIME(), @Remark)";
-
-            await _db.ExecuteAsync(cardSql, new
-            {
-                TransactionDate = c.ExportDate,
-                lot.ImportDeclarNo,
-                lot.ImportItemNo,
-                lot.ImportDate,
-                c.ExportDeclarNo,
-                c.ExportItemNo,
-                c.RawMaterialCode,
-                lot.ProductCode,
-                lot.ProductDescription,
-                c.Unit,
-                QtyOut = c.QtyCut,
-                QtyBalance = lot.QtyBalance,
-                DutyAmount = c.DutyRefund,
-                lot.ImportTaxIncId,
-                c.ProductionFormulaNo,
-                LotId = lot.Id,
-                LotImportDeclarNo = lot.ImportDeclarNo,
-                CreatedBy = userName,
-                Remark = $"ตัด stock มาตรา 29 - ใบขนขาออก {c.ExportDeclarNo}/{c.ExportItemNo}",
-            });
-        }
+        // Update stock_m29_batch status
+        await _db.ExecuteAsync(
+            @"UPDATE imp.stock_m29_batch SET Status = 'CONFIRMED', ConfirmedBy = @UserName, ConfirmedDate = SYSUTCDATETIME()
+              WHERE ExportDeclarNo = @ExportDeclarNo AND ExportItemNo = @ExportItemNo AND Status = 'PENDING'",
+            new { ExportDeclarNo = exportDeclarNo, ExportItemNo = exportItemNo, UserName = userName });
     }
 
     // =============================================
@@ -335,8 +393,62 @@ public class Privilege19TvisService : IPrivilege19TvisService
             }
         }
 
-        // Delete cutting records
+        // Delete from stock_m29_batch
+        await _db.ExecuteAsync(
+            "DELETE FROM imp.stock_m29_batch WHERE ExportDeclarNo = @ExportDeclarNo AND ExportItemNo = @ExportItemNo",
+            new { ExportDeclarNo = exportDeclarNo, ExportItemNo = exportItemNo });
+
+        // Delete from stock_m29_card
+        await _db.ExecuteAsync(
+            "DELETE FROM imp.stock_m29_card WHERE ExportDeclarNo = @ExportDeclarNo AND ExportItemNo = @ExportItemNo AND TransactionType = 'OUT'",
+            new { ExportDeclarNo = exportDeclarNo, ExportItemNo = exportItemNo });
+
+        // Delete cutting records from stock_m29_batch
         await _cuttingRepo.DeleteByExportAsync(exportDeclarNo, exportItemNo);
+    }
+
+    // =============================================
+    // Cancel all cuttings by BatchDocNo
+    // =============================================
+    public async Task<int> CancelByBatchDocNoAsync(string batchDocNo, string userName)
+    {
+        var cuttings = await _cuttingRepo.GetByBatchDocNoAsync(batchDocNo);
+        var list = cuttings.ToList();
+        if (list.Count == 0)
+            throw new AppException("NOT_FOUND", $"ไม่พบรายการตัด stock เลขที่เอกสาร: {batchDocNo}");
+
+        foreach (var c in list)
+        {
+            if (c.Status == "CONFIRMED")
+                throw new AppException("INVALID_STATUS", $"ไม่สามารถยกเลิกเอกสาร {batchDocNo} เนื่องจากมีรายการยืนยันแล้ว");
+        }
+
+        // Restore all lot balances
+        foreach (var c in list)
+        {
+            var lot = await _lotRepo.GetByIdAsync(c.StockLotId);
+            if (lot != null)
+            {
+                var restoredUsed = lot.QtyUsed - c.QtyCut;
+                var restoredBalance = lot.QtyBalance + c.QtyCut;
+                await _lotRepo.UpdateQtyAsync(lot.Id, restoredUsed, restoredBalance, "ACTIVE");
+            }
+        }
+
+        // Delete from stock_m29_batch by batch export items
+        foreach (var c in list)
+        {
+            await _db.ExecuteAsync(
+                "DELETE FROM imp.stock_m29_batch WHERE StockLotId = @StockLotId AND ExportDeclarNo = @ExportDeclarNo AND ExportItemNo = @ExportItemNo",
+                new { c.StockLotId, c.ExportDeclarNo, c.ExportItemNo });
+            await _db.ExecuteAsync(
+                "DELETE FROM imp.stock_m29_card WHERE LotId = @LotId AND ExportDeclarNo = @ExportDeclarNo AND ExportItemNo = @ExportItemNo AND TransactionType = 'OUT'",
+                new { LotId = c.StockLotId, c.ExportDeclarNo, c.ExportItemNo });
+        }
+
+        // Delete all cutting records from stock_m29_batch for this batch
+        await _cuttingRepo.DeleteByBatchDocNoAsync(batchDocNo);
+        return list.Count;
     }
 
     // =============================================
@@ -344,19 +456,15 @@ public class Privilege19TvisService : IPrivilege19TvisService
     // =============================================
     public async Task<SyncStockLotResponse> SyncImportToStockLotAsync(string userName)
     {
-        // Get import records that have Section 19 bis privilege and not yet in stock_m29_lot
+        // Get ALL import records that have Section 19 bis privilege
         var sql = @"
             SELECT i.*
             FROM imp.import_excel i
             WHERE i.UsePrivilege IS NOT NULL AND i.UsePrivilege != ''
-              AND NOT EXISTS (
-                  SELECT 1 FROM imp.stock_m29_lot sl
-                  WHERE sl.ImportDeclarNo = i.DeclarNo AND sl.ImportItemNo = i.ItemDeclarNo
-              )
             ORDER BY i.StampDateTime ASC, i.DeclarNo, i.ItemDeclarNo";
 
         var imports = await _db.QueryAsync<ImportExcel>(sql);
-        int inserted = 0, skipped = 0;
+        int inserted = 0, updated = 0, skipped = 0;
 
         foreach (var imp in imports)
         {
@@ -374,35 +482,73 @@ public class Privilege19TvisService : IPrivilege19TvisService
             else if (imp.DutyTextTHB.HasValue && imp.DutyTextTHB > 0 && qty > 0)
                 dutyPerUnit = imp.DutyTextTHB.Value / qty;
 
-            var lot = new StockLot
-            {
-                ImportDeclarNo = imp.DeclarNo,
-                ImportItemNo = imp.ItemDeclarNo,
-                ImportDate = importDate,
-                PrivilegeType = "19TVIS",
-                RawMaterialCode = imp.MaterialCode ?? imp.ProductCode ?? imp.DeclarNo,
-                ProductCode = imp.ProductCode,
-                ProductDescription = imp.DescriptionTh1 ?? imp.DescriptionEn1,
-                Unit = unit,
-                QtyOriginal = qty,
-                QtyBalance = qty,
-                UnitPrice = imp.UnitPrice,
-                CIFValueTHB = imp.CIFTHB,
-                DutyRate = imp.DutyRate,
-                DutyPerUnit = dutyPerUnit,
-                TotalDutyVAT = imp.TotalDutyVAT,
-                ImportTaxIncId = imp.ImportTaxInc,
-                BOICardNo = imp.BOICardNo,
-                ProductionFormulaNo = imp.ProductionFormula,
-                ExpiryDate = importDate.AddYears(1),
-                CreatedBy = userName,
-            };
+            // MERGE: insert new lots, update existing lots (preserve QtyUsed)
+            var result = await _db.ExecuteScalarAsync<string>(@"
+                DECLARE @action NVARCHAR(10);
+                MERGE imp.stock_m29_lot AS target
+                USING (SELECT @ImportDeclarNo AS ImportDeclarNo, @ImportItemNo AS ImportItemNo) AS source
+                ON target.ImportDeclarNo = source.ImportDeclarNo AND target.ImportItemNo = source.ImportItemNo
+                WHEN MATCHED THEN
+                    UPDATE SET
+                        ImportDate = @ImportDate,
+                        RawMaterialCode = @RawMaterialCode,
+                        ProductCode = @ProductCode,
+                        ProductDescription = @ProductDescription,
+                        Unit = @Unit,
+                        QtyOriginal = @QtyOriginal,
+                        QtyBalance = @QtyOriginal - target.QtyUsed,
+                        UnitPrice = @UnitPrice,
+                        CIFValueTHB = @CIFValueTHB,
+                        DutyRate = @DutyRate,
+                        DutyPerUnit = @DutyPerUnit,
+                        TotalDutyVAT = @TotalDutyVAT,
+                        ImportTaxIncId = @ImportTaxIncId,
+                        BOICardNo = @BOICardNo,
+                        ProductionFormulaNo = @ProductionFormulaNo,
+                        ExpiryDate = @ExpiryDate
+                WHEN NOT MATCHED THEN
+                    INSERT (ImportDeclarNo, ImportItemNo, ImportDate, PrivilegeType,
+                            RawMaterialCode, ProductCode, ProductDescription, Unit,
+                            QtyOriginal, QtyBalance,
+                            UnitPrice, CIFValueTHB, DutyRate, DutyPerUnit, TotalDutyVAT,
+                            ImportTaxIncId, BOICardNo, ProductionFormulaNo,
+                            Status, ExpiryDate, CreatedBy)
+                    VALUES (@ImportDeclarNo, @ImportItemNo, @ImportDate, @PrivilegeType,
+                            @RawMaterialCode, @ProductCode, @ProductDescription, @Unit,
+                            @QtyOriginal, @QtyBalance,
+                            @UnitPrice, @CIFValueTHB, @DutyRate, @DutyPerUnit, @TotalDutyVAT,
+                            @ImportTaxIncId, @BOICardNo, @ProductionFormulaNo,
+                            'ACTIVE', @ExpiryDate, @CreatedBy)
+                OUTPUT $action;",
+                new
+                {
+                    ImportDeclarNo = imp.DeclarNo,
+                    ImportItemNo = imp.ItemDeclarNo,
+                    ImportDate = importDate,
+                    PrivilegeType = "19TVIS",
+                    RawMaterialCode = imp.MaterialCode ?? imp.ProductCode ?? imp.DeclarNo,
+                    ProductCode = imp.ProductCode,
+                    ProductDescription = imp.DescriptionTh1 ?? imp.DescriptionEn1,
+                    Unit = unit,
+                    QtyOriginal = qty,
+                    QtyBalance = qty,
+                    UnitPrice = imp.UnitPrice,
+                    CIFValueTHB = imp.CIFTHB,
+                    DutyRate = imp.DutyRate,
+                    DutyPerUnit = dutyPerUnit,
+                    TotalDutyVAT = imp.TotalDutyVAT,
+                    ImportTaxIncId = imp.ImportTaxInc,
+                    BOICardNo = imp.BOICardNo,
+                    ProductionFormulaNo = imp.ProductionFormula,
+                    ExpiryDate = importDate.AddYears(1),
+                    CreatedBy = userName,
+                });
 
-            await _lotRepo.InsertAsync(lot);
-            inserted++;
+            if (result == "INSERT") inserted++;
+            else if (result == "UPDATE") updated++;
         }
 
-        return new SyncStockLotResponse { InsertedCount = inserted, SkippedCount = skipped };
+        return new SyncStockLotResponse { InsertedCount = inserted, UpdatedCount = updated, SkippedCount = skipped };
     }
 
     // =============================================
@@ -428,7 +574,7 @@ public class Privilege19TvisService : IPrivilege19TvisService
             DutyPerUnit = l.DutyPerUnit,
             Status = l.Status,
             ExpiryDate = l.ExpiryDate?.ToString("yyyy-MM-dd"),
-            DaysRemaining = l.ExpiryDate.HasValue ? Math.Max(0, (l.ExpiryDate.Value - DateTime.UtcNow).Days) : 0,
+            AgeDays = (DateTime.UtcNow - l.ImportDate).Days,
         });
 
         return new PagedResponse<StockLotListItem>
@@ -446,15 +592,23 @@ public class Privilege19TvisService : IPrivilege19TvisService
     public async Task<List<ExportLineItem>> GetExportLinesByDeclarNoAsync(string declarNo)
     {
         var sql = @"
-            SELECT e.Id, e.DeclarNo, e.ItemDeclarNo, e.ReleaseDate AS ExportDate,
+            SELECT e.Id, e.DeclarNo, e.ItemDeclarNo, e.LoadingDate AS ExportDate,
                    e.InvoiceNo, e.ProductCode, e.DescriptionTh1,
                    e.QtyDeclar, e.QtyDeclarUnit, e.NetWeight, e.FOBTHB,
                    e.ImportDeclarNo, e.Section19BisNo, e.ImportTaxIncentiveId,
-                   (SELECT TOP 1 sc.Status FROM imp.stock_m29_cutting sc
-                    WHERE sc.ExportDeclarNo = e.DeclarNo AND sc.ExportItemNo = e.ItemDeclarNo) AS CuttingStatus
+                   CASE WHEN bi.ExportExcelId IS NOT NULL THEN N'BATCHED' END AS CuttingStatus
             FROM imp.export_excel e
+            LEFT JOIN (
+                SELECT bi2.ExportExcelId
+                FROM imp.m29_batch_item bi2
+                INNER JOIN imp.m29_batch_header bh ON bh.Id = bi2.BatchHeaderId
+                WHERE bh.Status <> N'CANCELLED'
+            ) bi ON bi.ExportExcelId = e.Id
             WHERE e.DeclarNo = @DeclarNo
-              AND e.Section19Bis IS NOT NULL AND e.Section19Bis != ''
+              AND e.Section19Bis = N'Y'
+              AND e.Section19BisNo <> N'00000000-00'
+              AND e.Section19BisNo <> N''
+              AND e.CurrentStatus = N'0409'
             ORDER BY e.ItemDeclarNo";
 
         var items = await _db.QueryAsync<ExportLineItem>(sql, new { DeclarNo = declarNo.Trim() });
@@ -482,7 +636,12 @@ public class Privilege19TvisService : IPrivilege19TvisService
         if (materialCodes.Count > 0)
         {
             var onHandRows = await _db.QueryAsync<(string RawMaterialCode, decimal QtyBalance)>(
-                "SELECT RawMaterialCode, QtyBalance FROM imp.stock_m29_on_hand WHERE RawMaterialCode IN @Codes",
+                @"SELECT RawMaterialCode, SUM(QtyBalance) AS QtyBalance
+                  FROM imp.stock_m29_lot
+                  WHERE RawMaterialCode IN @Codes
+                    AND PrivilegeType = '19TVIS'
+                    AND Status = 'ACTIVE'
+                  GROUP BY RawMaterialCode",
                 new { Codes = materialCodes });
             foreach (var row in onHandRows)
                 onHandMap[row.RawMaterialCode] = row.QtyBalance;
@@ -500,8 +659,8 @@ public class Privilege19TvisService : IPrivilege19TvisService
                 Unit = d.Unit,
                 Ratio = d.Ratio,
                 Scrap = d.Scrap,
-                QtyFromFormula = exportQty * (d.Ratio ?? 0),
-                QtyRequired = exportQty * ((d.Ratio ?? 0) + (d.Scrap ?? 0)),
+                QtyFromFormula = exportQty * (d.Ratio ?? 0) / 100,
+                QtyRequired = exportQty * ((d.Ratio ?? 0) + (d.Scrap ?? 0)) / 100,
                 QtyOnHand = !string.IsNullOrWhiteSpace(d.RawMaterialCode) && onHandMap.TryGetValue(d.RawMaterialCode, out var bal) ? bal : null,
                 Remark = d.Remark,
             }).ToList(),
@@ -513,7 +672,7 @@ public class Privilege19TvisService : IPrivilege19TvisService
     // =============================================
     public async Task<List<StockLotListItem>> GetAvailableLotsForMaterialAsync(string rawMaterialCode)
     {
-        var lots = await _lotRepo.GetActiveLotsFifoAsync(rawMaterialCode, "19TVIS", DateTime.UtcNow);
+        var lots = await _lotRepo.GetAllActiveLotsFifoAsync(rawMaterialCode, "19TVIS");
 
         return lots.Select(l => new StockLotListItem
         {
@@ -530,7 +689,7 @@ public class Privilege19TvisService : IPrivilege19TvisService
             DutyPerUnit = l.DutyPerUnit,
             Status = l.Status,
             ExpiryDate = l.ExpiryDate?.ToString("yyyy-MM-dd"),
-            DaysRemaining = l.ExpiryDate.HasValue ? Math.Max(0, (l.ExpiryDate.Value - DateTime.UtcNow).Days) : 0,
+            AgeDays = (DateTime.UtcNow - l.ImportDate).Days,
         }).ToList();
     }
 
@@ -567,5 +726,369 @@ public class Privilege19TvisService : IPrivilege19TvisService
             QtyOut = (decimal?)c.QtyOut,
             QtyBalance = (decimal)c.QtyBalance,
         }).ToList();
+    }
+
+    // =============================================
+    // Get next cutting document number
+    // =============================================
+    public async Task<NextDocNoResponse> GetNextDocNoAsync()
+    {
+        var buddhistYear = (DateTime.UtcNow.Year + 543).ToString();
+        var yearSuffix = buddhistYear[^2..];
+        var maxRunning = await _cuttingRepo.GetMaxRunningNoAsync(yearSuffix);
+        var nextRunning = maxRunning + 1;
+
+        return new NextDocNoResponse
+        {
+            NextRunning = nextRunning,
+            YearSuffix = yearSuffix,
+            NextDocNo = $"{nextRunning:D3}/{yearSuffix}",
+        };
+    }
+
+    // =============================================
+    // Batch Management
+    // =============================================
+
+    public async Task<PagedResponse<BatchListItem>> SearchBatchesAsync(
+        string? batchDocNo, string? status, string? dateFrom, string? dateTo, int page, int pageSize)
+    {
+        var (items, totalCount) = await _cuttingRepo.SearchBatchesAsync(batchDocNo, status, dateFrom, dateTo, page, pageSize);
+
+        return new PagedResponse<BatchListItem>
+        {
+            Data = items,
+            TotalCount = totalCount,
+            Page = page,
+            PageSize = pageSize,
+        };
+    }
+
+    public async Task<BatchDetailResponse> GetBatchDetailAsync(string batchDocNo)
+    {
+        var cuttings = (await _cuttingRepo.GetBatchDetailAsync(batchDocNo)).ToList();
+        if (cuttings.Count == 0)
+            throw new AppException("NOT_FOUND", $"ไม่พบชุดเอกสาร: {batchDocNo}");
+
+        var first = cuttings.First();
+
+        // Group by (ExportDeclarNo, ExportItemNo)
+        var exportItems = cuttings
+            .GroupBy(c => new { c.ExportDeclarNo, c.ExportItemNo })
+            .Select(g => new BatchExportItemDetail
+            {
+                ExportDeclarNo = g.Key.ExportDeclarNo,
+                ExportItemNo = g.Key.ExportItemNo,
+                ExportDate = g.First().ExportDate.ToString("yyyy-MM-dd"),
+                ProductionFormulaNo = g.First().ProductionFormulaNo,
+                ExportQty = g.First().ExportQty,
+                TotalQtyCut = g.Sum(c => c.QtyCut),
+                TotalDutyRefund = g.Sum(c => c.DutyRefund ?? 0),
+                Status = g.First().Status,
+                Cuttings = g.Select(c => new CuttingResultItem
+                {
+                    CuttingId = c.Id,
+                    LotId = c.StockLotId,
+                    ImportDeclarNo = c.ImportDeclarNo ?? "",
+                    ImportItemNo = c.ImportItemNo,
+                    ImportDate = c.ImportDate?.ToString("yyyy-MM-dd"),
+                    RawMaterialCode = c.RawMaterialCode,
+                    Unit = c.Unit,
+                    QtyCut = c.QtyCut,
+                    DutyPerUnit = c.DutyPerUnit,
+                    DutyRefund = c.DutyRefund,
+                    LotBalanceAfter = 0, // not relevant for batch detail view
+                }).ToList(),
+            }).ToList();
+
+        // Determine overall status
+        var allStatuses = cuttings.Select(c => c.Status).Distinct().ToList();
+        var overallStatus = allStatuses.Count == 1 ? allStatuses[0] : "PENDING";
+
+        return new BatchDetailResponse
+        {
+            BatchDocNo = batchDocNo,
+            Status = overallStatus,
+            CreatedBy = first.CreatedBy,
+            CreatedDate = first.CreatedDate,
+            ConfirmedBy = first.ConfirmedBy,
+            ConfirmedDate = first.ConfirmedDate,
+            TotalQtyCut = cuttings.Sum(c => c.QtyCut),
+            TotalDutyRefund = cuttings.Sum(c => c.DutyRefund ?? 0),
+            ExportItems = exportItems,
+        };
+    }
+
+    public async Task ConfirmBatchAsync(string batchDocNo, string userName)
+    {
+        var cuttings = (await _cuttingRepo.GetByBatchDocNoAsync(batchDocNo)).ToList();
+        if (cuttings.Count == 0)
+            throw new AppException("NOT_FOUND", $"ไม่พบชุดเอกสาร: {batchDocNo}");
+
+        // Validate all are PENDING
+        if (cuttings.Any(c => c.Status != "PENDING"))
+            throw new AppException("INVALID_STATUS", "ชุดเอกสารนี้มีรายการที่ไม่อยู่ในสถานะรอยืนยัน");
+
+        // Update stock_m29_batch status
+        await _cuttingRepo.UpdateStatusByBatchDocNoAsync(batchDocNo, "CONFIRMED", userName);
+
+        // Update stock_m29_batch status
+        await _db.ExecuteAsync(
+            @"UPDATE imp.stock_m29_batch SET Status = 'CONFIRMED', ConfirmedBy = @UserName, ConfirmedDate = SYSUTCDATETIME()
+              WHERE ExportDeclarNo IN (SELECT DISTINCT ExportDeclarNo FROM imp.stock_m29_batch WHERE BatchDocNo = @BatchDocNo)
+                AND ExportItemNo IN (SELECT DISTINCT ExportItemNo FROM imp.stock_m29_batch WHERE BatchDocNo = @BatchDocNo)
+                AND Status = 'PENDING'",
+            new { BatchDocNo = batchDocNo, UserName = userName });
+
+        // Update m29_batch_header status
+        await _db.ExecuteAsync(
+            @"UPDATE imp.m29_batch_header SET Status = 'CONFIRMED', ConfirmedBy = @UserName, ConfirmedDate = SYSUTCDATETIME()
+              WHERE BatchDocNo = @BatchDocNo AND Status = 'PENDING'",
+            new { BatchDocNo = batchDocNo, UserName = userName });
+    }
+
+    // =============================================
+    // M29 Batch Management (m29_batch_header / m29_batch_item)
+    // =============================================
+
+    public async Task<PagedResponse<BatchListItem>> SearchM29BatchesAsync(
+        string? batchDocNo, string? status, string? dateFrom, string? dateTo, int page, int pageSize)
+    {
+        var (items, totalCount) = await _m29BatchRepo.SearchAsync(batchDocNo, status, dateFrom, dateTo, page, pageSize);
+        return new PagedResponse<BatchListItem>
+        {
+            Data = items,
+            TotalCount = totalCount,
+            Page = page,
+            PageSize = pageSize,
+        };
+    }
+
+    public async Task<NextDocNoResponse> GetNextM29BatchDocNoAsync()
+    {
+        var buddhistYear = (DateTime.UtcNow.Year + 543).ToString();
+        var yearSuffix = buddhistYear[^2..];
+
+        // ดึงชุดเอกสารล่าสุดของปีนี้
+        var latestHeader = await _m29BatchRepo.GetLatestHeaderByYearAsync(yearSuffix);
+
+        if (latestHeader != null)
+        {
+            // ชุดล่าสุดยังไม่ตัด stock สมบูรณ์ → ใช้เลขเดิม (ไม่ running ถัดไป)
+            if (latestHeader.Status != "CONFIRMED")
+            {
+                return new NextDocNoResponse
+                {
+                    NextRunning = 0,
+                    YearSuffix = yearSuffix,
+                    NextDocNo = latestHeader.BatchDocNo,
+                    Remark = latestHeader.Remark,
+                };
+            }
+        }
+
+        // ชุดล่าสุด CONFIRMED แล้ว หรือยังไม่มีชุดในปีนี้ → running ถัดไป
+        // ถ้าขึ้นปีใหม่ (ไม่มี record ในปีนี้) maxRunning = 0 → nextRunning = 1
+        var maxRunning = await _m29BatchRepo.GetMaxRunningNoAsync(yearSuffix);
+        var nextRunning = maxRunning + 1;
+
+        return new NextDocNoResponse
+        {
+            NextRunning = nextRunning,
+            YearSuffix = yearSuffix,
+            NextDocNo = $"{nextRunning:D3}/{yearSuffix}",
+        };
+    }
+
+    public async Task<CreateBatchResponse> CreateM29BatchAsync(CreateBatchRequest request, string userName)
+    {
+        if (request.ExportExcelIds.Count == 0)
+            throw new AppException("VALIDATION_ERROR", "กรุณาเลือกรายการส่งออก");
+
+        // Validate: ชุดล่าสุดต้อง CONFIRMED ก่อนสร้างชุดใหม่
+        var buddhistYear = (DateTime.UtcNow.Year + 543).ToString();
+        var yearSuffix = buddhistYear[^2..];
+        var latestHeader = await _m29BatchRepo.GetLatestHeaderByYearAsync(yearSuffix);
+        if (latestHeader != null && latestHeader.Status != "CONFIRMED")
+            throw new AppException("BATCH_NOT_COMPLETED", $"ชุดเอกสาร {latestHeader.BatchDocNo} ยังไม่ได้ตัด stock สมบูรณ์ กรุณายืนยันชุดเดิมก่อนสร้างชุดใหม่");
+
+        // Fetch export items
+        var exports = (await _db.QueryAsync<ExportExcel>(
+            "SELECT * FROM imp.export_excel WHERE Id IN @Ids",
+            new { Ids = request.ExportExcelIds })).ToList();
+
+        if (exports.Count == 0)
+            throw new AppException("NOT_FOUND", "ไม่พบรายการส่งออกที่เลือก");
+
+        // Validate: ตรวจว่า item ถูกจัดชุดแล้วหรือยัง (ป้องกัน race condition)
+        var alreadyBatched = await _db.QueryAsync<int>(
+            @"SELECT bi.ExportExcelId FROM imp.m29_batch_item bi
+              INNER JOIN imp.m29_batch_header bh ON bh.Id = bi.BatchHeaderId
+              WHERE bh.Status <> N'CANCELLED' AND bi.ExportExcelId IN @Ids",
+            new { Ids = request.ExportExcelIds });
+        if (alreadyBatched.Any())
+        {
+            var batchedDeclars = exports.Where(e => alreadyBatched.Contains(e.Id))
+                .Select(e => e.DeclarNo).Distinct();
+            throw new AppException("ALREADY_BATCHED",
+                $"รายการใบขน {string.Join(", ", batchedDeclars)} ถูกจัดชุดแล้ว กรุณาปิดและเปิดใหม่");
+        }
+
+        // Validate: distinct DeclarNo ≤ 10
+        var distinctDeclars = exports.Select(e => e.DeclarNo).Distinct().ToList();
+        if (distinctDeclars.Count > 10)
+            throw new AppException("BATCH_LIMIT", "1 ชุดเอกสาร ต้องมีใบขนขาออกไม่เกิน 10 ฉบับ");
+
+        // Validate: total FOBTHB ≤ 10,000,000
+        var totalFob = exports.Sum(e => e.FOBTHB ?? 0);
+        if (totalFob > 10_000_000)
+            throw new AppException("FOB_LIMIT", "มูลค่า FOB รวมต้องไม่เกิน 10,000,000 บาท");
+
+        var totalNetWeight = exports.Sum(e => e.NetWeight ?? 0);
+
+        // Auto-generate remark summary
+        var remark = $"เลือกแล้ว {exports.Count} รายการ ({distinctDeclars.Count} ใบขน) · น้ำหนัก: {totalNetWeight:#,##0.00} kg · FOB: {totalFob:#,##0.00} บาท";
+
+        // Generate doc no
+        var docNoInfo = await GetNextM29BatchDocNoAsync();
+
+        // Insert header + items ใน transaction — ถ้าไม่สำเร็จ rollback ทั้งหมด
+        if (_db.State != System.Data.ConnectionState.Open)
+            _db.Open();
+        using var transaction = _db.BeginTransaction();
+        try
+        {
+            // Insert header
+            var header = new M29BatchHeader
+            {
+                BatchDocNo = docNoInfo.NextDocNo,
+                Status = "PENDING",
+                TotalItems = exports.Count,
+                TotalNetWeight = totalNetWeight,
+                TotalFOBTHB = totalFob,
+                Remark = remark,
+                CreatedBy = userName,
+            };
+            var headerId = await _db.ExecuteScalarAsync<int>(
+                @"INSERT INTO imp.m29_batch_header (BatchDocNo, Status, TotalItems, TotalNetWeight, TotalFOBTHB, Remark, CreatedBy, CreatedDate)
+                  VALUES (@BatchDocNo, @Status, @TotalItems, @TotalNetWeight, @TotalFOBTHB, @Remark, @CreatedBy, SYSUTCDATETIME());
+                  SELECT CAST(SCOPE_IDENTITY() AS INT);",
+                new { header.BatchDocNo, header.Status, header.TotalItems, header.TotalNetWeight, header.TotalFOBTHB, header.Remark, header.CreatedBy },
+                transaction);
+
+            // Insert items sorted by LoadingDate ASC
+            var sorted = exports.OrderBy(e =>
+                DateTime.TryParseExact(e.LoadingDate, "dd/MM/yyyy", null, System.Globalization.DateTimeStyles.None, out var d) ? d : DateTime.MaxValue
+            ).ToList();
+            for (var i = 0; i < sorted.Count; i++)
+            {
+                var exp = sorted[i];
+                DateTime? exportDate = DateTime.TryParseExact(exp.LoadingDate, "dd/MM/yyyy", null,
+                    System.Globalization.DateTimeStyles.None, out var dt) ? dt : null;
+
+                await _db.ExecuteAsync(
+                    @"INSERT INTO imp.m29_batch_item (BatchHeaderId, ExportExcelId, ExportDeclarNo, ExportItemNo,
+                        ExportDate, LoadingDate, ProductCode, Section19BisNo, NetWeight, FOBTHB, SortOrder, CreatedBy, CreatedDate)
+                      VALUES (@BatchHeaderId, @ExportExcelId, @ExportDeclarNo, @ExportItemNo,
+                        @ExportDate, @LoadingDate, @ProductCode, @Section19BisNo, @NetWeight, @FOBTHB, @SortOrder, @CreatedBy, SYSUTCDATETIME());",
+                    new
+                    {
+                        BatchHeaderId = headerId,
+                        ExportExcelId = exp.Id,
+                        ExportDeclarNo = exp.DeclarNo,
+                        ExportItemNo = exp.ItemDeclarNo,
+                        ExportDate = exportDate,
+                        LoadingDate = exp.LoadingDate,
+                        ProductCode = exp.ProductCode,
+                        Section19BisNo = exp.Section19BisNo,
+                        NetWeight = exp.NetWeight,
+                        FOBTHB = exp.FOBTHB,
+                        SortOrder = i + 1,
+                        CreatedBy = userName,
+                    },
+                    transaction);
+            }
+
+            transaction.Commit();
+
+            return new CreateBatchResponse
+            {
+                BatchHeaderId = headerId,
+                BatchDocNo = docNoInfo.NextDocNo,
+                TotalItems = exports.Count,
+                TotalNetWeight = totalNetWeight,
+                TotalFOBTHB = totalFob,
+                Remark = remark,
+            };
+        }
+        catch (Exception ex)
+        {
+            transaction.Rollback();
+            throw new AppException("SAVE_ERROR", $"บันทึกชุดเอกสารไม่สำเร็จ: {ex.Message}");
+        }
+    }
+
+    public async Task<M29BatchDetailResponse> GetM29BatchDetailAsync(string batchDocNo)
+    {
+        var header = await _m29BatchRepo.GetHeaderByDocNoAsync(batchDocNo)
+            ?? throw new AppException("NOT_FOUND", $"ไม่พบชุดเอกสาร: {batchDocNo}");
+
+        var items = await _m29BatchRepo.GetItemsByHeaderIdAsync(header.Id);
+
+        return new M29BatchDetailResponse
+        {
+            BatchDocNo = header.BatchDocNo,
+            Status = header.Status,
+            TotalItems = header.TotalItems,
+            TotalNetWeight = header.TotalNetWeight,
+            TotalFOBTHB = header.TotalFOBTHB,
+            CreatedBy = header.CreatedBy,
+            CreatedDate = header.CreatedDate,
+            ConfirmedBy = header.ConfirmedBy,
+            ConfirmedDate = header.ConfirmedDate,
+            CancelledBy = header.CancelledBy,
+            CancelledDate = header.CancelledDate,
+            Items = items.Select(i => new M29BatchItemDetail
+            {
+                Id = i.Id,
+                ExportExcelId = i.ExportExcelId,
+                ExportDeclarNo = i.ExportDeclarNo,
+                ExportItemNo = i.ExportItemNo,
+                ExportDate = i.ExportDate?.ToString("yyyy-MM-dd"),
+                LoadingDate = i.LoadingDate,
+                ProductCode = i.ProductCode,
+                Section19BisNo = i.Section19BisNo,
+                NetWeight = i.NetWeight,
+                FOBTHB = i.FOBTHB,
+                SortOrder = i.SortOrder,
+                InvoiceNo = i.InvoiceNo,
+                BuyerName = i.BuyerName,
+            }).ToList(),
+        };
+    }
+
+    public async Task ConfirmM29BatchAsync(string batchDocNo, string userName)
+    {
+        var header = await _m29BatchRepo.GetHeaderByDocNoAsync(batchDocNo)
+            ?? throw new AppException("NOT_FOUND", $"ไม่พบชุดเอกสาร: {batchDocNo}");
+
+        if (header.Status != "PENDING")
+            throw new AppException("INVALID_STATUS", "ชุดเอกสารนี้ไม่อยู่ในสถานะรอยืนยัน");
+
+        await _m29BatchRepo.UpdateStatusAsync(header.Id, "CONFIRMED", userName);
+    }
+
+    public async Task CancelM29BatchAsync(string batchDocNo, string userName)
+    {
+        var header = await _m29BatchRepo.GetHeaderByDocNoAsync(batchDocNo)
+            ?? throw new AppException("NOT_FOUND", $"ไม่พบชุดเอกสาร: {batchDocNo}");
+
+        if (header.Status == "CONFIRMED")
+            throw new AppException("INVALID_STATUS", "ไม่สามารถยกเลิกชุดเอกสารที่ยืนยันแล้ว");
+
+        // DELETE header → items ถูกลบตาม (CASCADE)
+        await _db.ExecuteAsync(
+            "DELETE FROM imp.m29_batch_header WHERE Id = @Id",
+            new { header.Id });
     }
 }

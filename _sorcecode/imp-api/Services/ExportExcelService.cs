@@ -82,11 +82,11 @@ public class ExportExcelService : IExportExcelService
                 BuyerName = GetString(reader, 5),
                 ItemDeclarNo = itemDeclarNo,
                 InvoiceNo = GetString(reader, 7),
-                InvDate = GetString(reader, 8),
+                InvDate = GetDateString(reader, 8),
                 InvoiceItemNo = GetIntNullable(reader, 9),
-                SubmissionDate = GetString(reader, 10),
-                ReleaseDate = GetString(reader, 11),
-                LoadingDate = GetString(reader, 12),
+                SubmissionDate = GetDateString(reader, 10),
+                ReleaseDate = GetDateString(reader, 11),
+                LoadingDate = GetDateString(reader, 12),
                 CurrentStatus = GetString(reader, 13),
                 ProductCode = GetString(reader, 14),
                 Brand = GetString(reader, 15),
@@ -268,6 +268,42 @@ public class ExportExcelService : IExportExcelService
                 return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// อ่านค่าวันที่จาก Excel → return format dd/MM/yyyy (ค.ศ.) เสมอ
+    /// รองรับ: DateTime object, OLE serial number (double), string dd/MM/yyyy
+    /// </summary>
+    private static string? GetDateString(IExcelDataReader reader, int index)
+    {
+        if (index >= reader.FieldCount) return null;
+        var value = reader.GetValue(index);
+        if (value == null) return null;
+
+        // Excel เก็บ Date เป็น DateTime object
+        if (value is DateTime dt)
+            return dt.ToString("dd/MM/yyyy");
+
+        // Excel เก็บ Date เป็น OLE Automation serial number (double)
+        if (value is double d && d > 0 && d < 2958466) // valid Excel date range
+        {
+            try { return DateTime.FromOADate(d).ToString("dd/MM/yyyy"); }
+            catch { /* fall through */ }
+        }
+
+        // String — validate format dd/MM/yyyy
+        var str = value.ToString()?.Trim();
+        if (string.IsNullOrEmpty(str)) return null;
+
+        // ถ้าเป็น dd/MM/yyyy อยู่แล้ว → return ตรง
+        if (DateTime.TryParseExact(str, "dd/MM/yyyy", null, System.Globalization.DateTimeStyles.None, out _))
+            return str;
+
+        // ลอง parse format อื่น → convert เป็น dd/MM/yyyy
+        if (DateTime.TryParse(str, out var parsed))
+            return parsed.ToString("dd/MM/yyyy");
+
+        return str; // ไม่รู้จัก format → เก็บตรงๆ
     }
 
     private static decimal? GetDecimal(IExcelDataReader reader, int index)

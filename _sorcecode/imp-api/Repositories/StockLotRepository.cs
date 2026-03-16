@@ -21,9 +21,22 @@ public class StockLotRepository : IStockLotRepository
               AND PrivilegeType = @PrivilegeType
               AND Status = 'ACTIVE'
               AND (ExpiryDate IS NULL OR ExpiryDate >= @ExportDate)
+              AND DATEDIFF(DAY, ImportDate, GETUTCDATE()) <= 365
             ORDER BY ImportDate ASC";
 
         return await _db.QueryAsync<StockLot>(sql, new { RawMaterialCode = rawMaterialCode, PrivilegeType = privilegeType, ExportDate = exportDate });
+    }
+
+    public async Task<IEnumerable<StockLot>> GetAllActiveLotsFifoAsync(string rawMaterialCode, string privilegeType)
+    {
+        const string sql = @"
+            SELECT * FROM imp.stock_m29_lot
+            WHERE RawMaterialCode = @RawMaterialCode
+              AND PrivilegeType = @PrivilegeType
+              AND Status = 'ACTIVE'
+            ORDER BY ImportDate ASC";
+
+        return await _db.QueryAsync<StockLot>(sql, new { RawMaterialCode = rawMaterialCode, PrivilegeType = privilegeType });
     }
 
     public async Task<StockLot?> GetByIdAsync(int id)

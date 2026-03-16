@@ -24,14 +24,16 @@ public class Privilege19TvisController : ControllerBase
         [FromQuery] string? productCode,
         [FromQuery] string? dateFrom,
         [FromQuery] string? dateTo,
+        [FromQuery] bool uncutOnly = false,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 10)
     {
         if (page < 1) page = 1;
         if (pageSize < 1) pageSize = 10;
-        if (pageSize > 100) pageSize = 100;
+        if (!uncutOnly && pageSize > 100) pageSize = 100;
+        if (uncutOnly && pageSize > 10000) pageSize = 10000;
 
-        var result = await _service.SearchExportsAsync(declarNo, productCode, dateFrom, dateTo, page, pageSize);
+        var result = await _service.SearchExportsAsync(declarNo, productCode, dateFrom, dateTo, uncutOnly, page, pageSize);
         return Ok(result);
     }
 
@@ -117,6 +119,26 @@ public class Privilege19TvisController : ControllerBase
         }
     }
 
+    /// <summary>Cancel all cuttings by BatchDocNo</summary>
+    [HttpPut("cancel-batch")]
+    public async Task<IActionResult> CancelBatch([FromQuery] string batchDocNo)
+    {
+        var userName = User.Identity?.Name ?? "system";
+        try
+        {
+            var count = await _service.CancelByBatchDocNoAsync(batchDocNo, userName);
+            return Ok(new { cancelledCount = count, batchDocNo });
+        }
+        catch (AppException ex)
+        {
+            return ex.Error switch
+            {
+                "NOT_FOUND" => NotFound(new ErrorResponse { Error = ex.Error, Message = ex.Message }),
+                _ => BadRequest(new ErrorResponse { Error = ex.Error, Message = ex.Message }),
+            };
+        }
+    }
+
     /// <summary>Sync import_excel → stock_m29_lot (create lots from imports)</summary>
     [HttpPost("sync-lots")]
     public async Task<IActionResult> SyncLots()
@@ -183,5 +205,175 @@ public class Privilege19TvisController : ControllerBase
 
         var result = await _service.SearchLotsAsync(importDeclarNo, rawMaterialCode, status, page, pageSize);
         return Ok(result);
+    }
+
+    /// <summary>Get next cutting document number</summary>
+    [HttpGet("next-doc-no")]
+    public async Task<IActionResult> GetNextDocNo()
+    {
+        var result = await _service.GetNextDocNoAsync();
+        return Ok(result);
+    }
+
+    // =============================================
+    // Batch Management endpoints
+    // =============================================
+
+    /// <summary>Search batches (paginated)</summary>
+    [HttpGet("batches")]
+    public async Task<IActionResult> SearchBatches(
+        [FromQuery] string? batchDocNo,
+        [FromQuery] string? status,
+        [FromQuery] string? dateFrom,
+        [FromQuery] string? dateTo,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20)
+    {
+        if (page < 1) page = 1;
+        if (pageSize < 1) pageSize = 20;
+        if (pageSize > 100) pageSize = 100;
+
+        var result = await _service.SearchBatchesAsync(batchDocNo, status, dateFrom, dateTo, page, pageSize);
+        return Ok(result);
+    }
+
+    /// <summary>Get batch detail</summary>
+    [HttpGet("batch/{*batchDocNo}")]
+    public async Task<IActionResult> GetBatchDetail(string batchDocNo)
+    {
+        try
+        {
+            var result = await _service.GetBatchDetailAsync(batchDocNo);
+            return Ok(result);
+        }
+        catch (AppException ex)
+        {
+            return NotFound(new ErrorResponse { Error = ex.Error, Message = ex.Message });
+        }
+    }
+
+    /// <summary>Confirm entire batch (PENDING → CONFIRMED)</summary>
+    [HttpPut("confirm-batch")]
+    public async Task<IActionResult> ConfirmBatch([FromQuery] string batchDocNo)
+    {
+        var userName = User.Identity?.Name ?? "system";
+        try
+        {
+            await _service.ConfirmBatchAsync(batchDocNo, userName);
+            return Ok(new { batchDocNo, status = "CONFIRMED" });
+        }
+        catch (AppException ex)
+        {
+            return ex.Error switch
+            {
+                "NOT_FOUND" => NotFound(new ErrorResponse { Error = ex.Error, Message = ex.Message }),
+                _ => BadRequest(new ErrorResponse { Error = ex.Error, Message = ex.Message }),
+            };
+        }
+    }
+
+    // =============================================
+    // M29 Batch Management (m29_batch_header / m29_batch_item)
+    // =============================================
+
+    /// <summary>Search M29 batches (paginated)</summary>
+    [HttpGet("m29-batches")]
+    public async Task<IActionResult> SearchM29Batches(
+        [FromQuery] string? batchDocNo,
+        [FromQuery] string? status,
+        [FromQuery] string? dateFrom,
+        [FromQuery] string? dateTo,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20)
+    {
+        if (page < 1) page = 1;
+        if (pageSize < 1) pageSize = 20;
+        if (pageSize > 100) pageSize = 100;
+
+        var result = await _service.SearchM29BatchesAsync(batchDocNo, status, dateFrom, dateTo, page, pageSize);
+        return Ok(result);
+    }
+
+    /// <summary>Get next M29 batch document number</summary>
+    [HttpGet("m29-next-doc-no")]
+    public async Task<IActionResult> GetNextM29DocNo()
+    {
+        var result = await _service.GetNextM29BatchDocNoAsync();
+        return Ok(result);
+    }
+
+    /// <summary>Create M29 batch (select export items)</summary>
+    [HttpPost("m29-batch")]
+    public async Task<IActionResult> CreateM29Batch([FromBody] CreateBatchRequest request)
+    {
+        var userName = User.Identity?.Name ?? "system";
+        try
+        {
+            var result = await _service.CreateM29BatchAsync(request, userName);
+            return Ok(result);
+        }
+        catch (AppException ex)
+        {
+            return ex.Error switch
+            {
+                "BATCH_LIMIT" or "FOB_LIMIT" => BadRequest(new ErrorResponse { Error = ex.Error, Message = ex.Message }),
+                _ => BadRequest(new ErrorResponse { Error = ex.Error, Message = ex.Message }),
+            };
+        }
+    }
+
+    /// <summary>Get M29 batch detail</summary>
+    [HttpGet("m29-batch/{*batchDocNo}")]
+    public async Task<IActionResult> GetM29BatchDetail(string batchDocNo)
+    {
+        try
+        {
+            var result = await _service.GetM29BatchDetailAsync(batchDocNo);
+            return Ok(result);
+        }
+        catch (AppException ex)
+        {
+            return NotFound(new ErrorResponse { Error = ex.Error, Message = ex.Message });
+        }
+    }
+
+    /// <summary>Confirm M29 batch</summary>
+    [HttpPut("m29-confirm-batch")]
+    public async Task<IActionResult> ConfirmM29Batch([FromQuery] string batchDocNo)
+    {
+        var userName = User.Identity?.Name ?? "system";
+        try
+        {
+            await _service.ConfirmM29BatchAsync(batchDocNo, userName);
+            return Ok(new { batchDocNo, status = "CONFIRMED" });
+        }
+        catch (AppException ex)
+        {
+            return ex.Error switch
+            {
+                "NOT_FOUND" => NotFound(new ErrorResponse { Error = ex.Error, Message = ex.Message }),
+                _ => BadRequest(new ErrorResponse { Error = ex.Error, Message = ex.Message }),
+            };
+        }
+    }
+
+    /// <summary>Cancel M29 batch (DELETE header + items)</summary>
+    [HttpDelete("m29-batch")]
+    public async Task<IActionResult> CancelM29Batch([FromQuery] string batchDocNo)
+    {
+        var userName = User.Identity?.Name ?? "system";
+        try
+        {
+            await _service.CancelM29BatchAsync(batchDocNo, userName);
+            return Ok(new { batchDocNo, status = "CANCELLED" });
+        }
+        catch (AppException ex)
+        {
+            return ex.Error switch
+            {
+                "NOT_FOUND" => NotFound(new ErrorResponse { Error = ex.Error, Message = ex.Message }),
+                _ => BadRequest(new ErrorResponse { Error = ex.Error, Message = ex.Message }),
+            };
+        }
     }
 }

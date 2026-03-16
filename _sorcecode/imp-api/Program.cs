@@ -94,6 +94,7 @@ builder.Services.AddScoped<IBomM29Repository, BomM29Repository>();
 builder.Services.AddScoped<IBomBoiRepository, BomBoiRepository>();
 builder.Services.AddScoped<IStockLotRepository, StockLotRepository>();
 builder.Services.AddScoped<IStockCuttingRepository, StockCuttingRepository>();
+builder.Services.AddScoped<IM29BatchRepository, M29BatchRepository>();
 
 // DI — Services
 builder.Services.AddScoped<IJwtService, JwtService>();

@@ -127,10 +127,10 @@ BEGIN
 END
 GO
 
--- 3. stock_m29_cutting
-IF NOT EXISTS (SELECT * FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id WHERE s.name = 'imp' AND t.name = 'stock_m29_cutting')
+-- 3. stock_m29_batch
+IF NOT EXISTS (SELECT * FROM sys.tables t JOIN sys.schemas s ON t.schema_id = s.schema_id WHERE s.name = 'imp' AND t.name = 'stock_m29_batch')
 BEGIN
-    CREATE TABLE [imp].[stock_m29_cutting] (
+    CREATE TABLE [imp].[stock_m29_batch] (
         [Id]                  INT IDENTITY(1,1) NOT NULL,
         [StockLotId]          INT               NOT NULL,
         [ExportDeclarNo]      NVARCHAR(50)      NOT NULL,
@@ -167,16 +167,16 @@ BEGIN
         [ConfirmedBy]         NVARCHAR(100)     NULL,
         [ConfirmedDate]       DATETIME2(7)      NULL,
 
-        CONSTRAINT [PK_imp_stock_m29_cutting] PRIMARY KEY CLUSTERED ([Id]),
-        CONSTRAINT [FK_stock_m29_cutting_lot] FOREIGN KEY ([StockLotId])
+        CONSTRAINT [PK_imp_stock_m29_batch] PRIMARY KEY CLUSTERED ([Id]),
+        CONSTRAINT [FK_stock_m29_batch_lot] FOREIGN KEY ([StockLotId])
             REFERENCES [imp].[stock_m29_lot] ([Id])
     );
 
-    CREATE INDEX [IX_stock_m29_cutting_lot] ON [imp].[stock_m29_cutting] ([StockLotId]);
-    CREATE INDEX [IX_stock_m29_cutting_export] ON [imp].[stock_m29_cutting] ([ExportDeclarNo], [ExportItemNo]);
-    CREATE INDEX [IX_stock_m29_cutting_status] ON [imp].[stock_m29_cutting] ([Status]);
+    CREATE INDEX [IX_stock_m29_batch_lot] ON [imp].[stock_m29_batch] ([StockLotId]);
+    CREATE INDEX [IX_stock_m29_batch_export] ON [imp].[stock_m29_batch] ([ExportDeclarNo], [ExportItemNo]);
+    CREATE INDEX [IX_stock_m29_batch_status] ON [imp].[stock_m29_batch] ([Status]);
 
-    PRINT 'Created table imp.stock_m29_cutting';
+    PRINT 'Created table imp.stock_m29_batch';
 END
 GO
 

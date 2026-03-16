@@ -92,7 +92,7 @@ public class ImportExcelService : IImportExcelService
                 Subgate = GetString(reader, 12),
                 InspectionCode = GetString(reader, 13),
                 ApprovedPort = GetString(reader, 14),
-                ETA = GetString(reader, 15),
+                ETA = GetDateString(reader, 15),
                 MasterBL = GetString(reader, 16),
                 HouseBL = GetString(reader, 17),
                 FactoryNo = GetString(reader, 18),
@@ -137,7 +137,7 @@ public class ImportExcelService : IImportExcelService
                 OtherCharge2THB = GetDecimal(reader, 57),
                 AEORefNo = GetString(reader, 58),
                 InvoiceNo = GetString(reader, 59),
-                InvDate = GetString(reader, 60),
+                InvDate = GetDateString(reader, 60),
                 ItemNo = GetDecimal(reader, 61),
                 ProductCode = GetString(reader, 62),
                 DescriptionEn1 = GetString(reader, 63),
@@ -213,8 +213,8 @@ public class ImportExcelService : IImportExcelService
                 VATBase = GetDecimal(reader, 133),
                 Vat = GetDecimal(reader, 134),
                 TotalDutyVAT = GetDecimal(reader, 135),
-                EDIDateTime = GetString(reader, 136),
-                StampDateTime = GetString(reader, 137),
+                EDIDateTime = GetDateString(reader, 136),
+                StampDateTime = GetDateString(reader, 137),
                 EDIStatus = GetString(reader, 138),
                 RemarkInternal = GetString(reader, 139),
                 DepositAmt = GetDecimal(reader, 140),
@@ -276,7 +276,7 @@ public class ImportExcelService : IImportExcelService
 
         await _repository.UpsertBatchAsync(records, userName);
 
-        // Insert stock_m29_card (IN) + upsert stock_m29_on_hand + stock_m29_lot for new records
+        // Insert stock_m29_card (IN) + stock_m29_lot for new records
         var stockMsg = "";
         try
         {
@@ -284,9 +284,8 @@ public class ImportExcelService : IImportExcelService
             using var countConn = new Microsoft.Data.SqlClient.SqlConnection(_connectionString);
             await countConn.OpenAsync();
             var cardCount = await countConn.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM imp.stock_m29_card");
-            var onHandCount = await countConn.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM imp.stock_m29_on_hand");
             var lotCount = await countConn.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM imp.stock_m29_lot");
-            stockMsg = $" | Stock: card={cardCount}, on_hand={onHandCount}, lot={lotCount}";
+            stockMsg = $" | Stock: card={cardCount}, lot={lotCount}";
         }
         catch (Exception ex)
         {
@@ -302,7 +301,7 @@ public class ImportExcelService : IImportExcelService
         };
     }
 
-    /// <summary>Insert stock_m29_card (IN) and upsert stock_m29_on_hand for imported raw materials</summary>
+    /// <summary>Insert stock_m29_card (IN) and stock_m29_lot for imported raw materials</summary>
     private async Task UpsertStockOnImportAsync(List<ImportExcel> records, HashSet<string> existingKeys, string userName)
     {
         // Filter: UsePrivilege contains '19ทวิ' or '19tvis' + must have MaterialCode + NetWeight > 0
@@ -326,24 +325,17 @@ public class ImportExcelService : IImportExcelService
         using var conn = new Microsoft.Data.SqlClient.SqlConnection(_connectionString);
         await conn.OpenAsync();
 
-        // Get existing stock_m29_card entries to avoid duplicates
+        // Get existing stock_m29_card entries to avoid duplicate card INSERTs
         var existingStockCards = new HashSet<string>();
         var scEntries = await conn.QueryAsync<(string ImportDeclarNo, int ImportItemNo)>(
             "SELECT ImportDeclarNo, ImportItemNo FROM imp.stock_m29_card WHERE TransactionType = 'IN' AND ImportDeclarNo IS NOT NULL");
         foreach (var sc in scEntries)
             existingStockCards.Add($"{sc.ImportDeclarNo}|{sc.ImportItemNo}");
 
-        // Only process records that don't already have a stock_m29_card IN entry
-        var newForStock = validRecords
-            .Where(r => !existingStockCards.Contains($"{r.DeclarNo}|{r.ItemDeclarNo}"))
-            .ToList();
-
-        if (newForStock.Count == 0) return;
-
         using var tx = conn.BeginTransaction();
         try
         {
-            foreach (var r in newForStock)
+            foreach (var r in validRecords)
             {
                 var rawMaterialCode = r.MaterialCode!.Trim();
                 var unit = r.QuantityUnit?.Trim() ?? "KG";
@@ -353,14 +345,18 @@ public class ImportExcelService : IImportExcelService
                 var privilegeType = "19TVIS";
                 var dutyPerUnit = (qtyIn != 0 && r.TotalDutyVAT.HasValue) ? r.TotalDutyVAT.Value / qtyIn : (decimal?)null;
 
-                // Get current balance for this material from stock_m29_on_hand
+                // Get current balance for this material from stock_m29_lot
                 var currentBalance = await conn.ExecuteScalarAsync<decimal?>(
-                    "SELECT QtyBalance FROM imp.stock_m29_on_hand WHERE RawMaterialCode = @RawMaterialCode",
+                    @"SELECT SUM(QtyBalance) FROM imp.stock_m29_lot
+                      WHERE RawMaterialCode = @RawMaterialCode AND PrivilegeType = '19TVIS' AND Status = 'ACTIVE'",
                     new { RawMaterialCode = rawMaterialCode }, tx) ?? 0m;
 
                 var newBalance = currentBalance + qtyIn;
 
-                // 1. Insert stock_m29_card (IN)
+                // 1. Insert stock_m29_card (IN) — only for new records
+                var cardKey = $"{r.DeclarNo}|{r.ItemDeclarNo}";
+                if (!existingStockCards.Contains(cardKey))
+                {
                 await conn.ExecuteAsync(@"
                     INSERT INTO imp.stock_m29_card
                         (TransactionDate, TransactionType, PrivilegeType,
@@ -402,46 +398,31 @@ public class ImportExcelService : IImportExcelService
                         CreatedBy = userName,
                         Remark = $"นำเข้าจาก Excel: {r.DeclarNo}/{r.ItemDeclarNo}"
                     }, tx);
+                }
 
-                // 2. Upsert stock_m29_on_hand
-                await conn.ExecuteAsync(@"
-                    MERGE imp.stock_m29_on_hand AS target
-                    USING (SELECT @RawMaterialCode AS RawMaterialCode) AS source
-                    ON target.RawMaterialCode = source.RawMaterialCode
-                    WHEN MATCHED THEN
-                        UPDATE SET
-                            QtyIn = target.QtyIn + @QtyIn,
-                            QtyBalance = target.QtyBalance + @QtyIn,
-                            ProductCode = COALESCE(@ProductCode, target.ProductCode),
-                            ProductDescription = COALESCE(@ProductDescription, target.ProductDescription),
-                            DutyRate = COALESCE(@DutyRate, target.DutyRate),
-                            DutyPerUnit = COALESCE(@DutyPerUnit, target.DutyPerUnit),
-                            LastUpdatedBy = @UserName,
-                            LastUpdatedDate = SYSUTCDATETIME()
-                    WHEN NOT MATCHED THEN
-                        INSERT (RawMaterialCode, ProductCode, ProductDescription, Unit,
-                                QtyIn, QtyOut, QtyBalance, DutyRate, DutyPerUnit,
-                                LastUpdatedBy)
-                        VALUES (@RawMaterialCode, @ProductCode, @ProductDescription, @Unit,
-                                @QtyIn, 0, @QtyIn, @DutyRate, @DutyPerUnit,
-                                @UserName);",
-                    new
-                    {
-                        RawMaterialCode = rawMaterialCode,
-                        ProductCode = r.ProductCode?.Trim(),
-                        ProductDescription = r.DescriptionTh1?.Trim(),
-                        Unit = unit,
-                        QtyIn = qtyIn,
-                        DutyRate = r.DutyRate,
-                        DutyPerUnit = dutyPerUnit,
-                        UserName = userName
-                    }, tx);
-
-                // 3. Insert stock_m29_lot (FIFO queue for cutting)
+                // 2. Upsert stock_m29_lot (FIFO queue for cutting) — always runs for all records
                 await conn.ExecuteAsync(@"
                     MERGE imp.stock_m29_lot AS target
                     USING (SELECT @ImportDeclarNo AS ImportDeclarNo, @ImportItemNo AS ImportItemNo) AS source
                     ON target.ImportDeclarNo = source.ImportDeclarNo AND target.ImportItemNo = source.ImportItemNo
+                    WHEN MATCHED THEN
+                        UPDATE SET
+                            ImportDate = @ImportDate,
+                            RawMaterialCode = @RawMaterialCode,
+                            ProductCode = @ProductCode,
+                            ProductDescription = @ProductDescription,
+                            Unit = @Unit,
+                            QtyOriginal = @QtyOriginal,
+                            QtyBalance = @QtyOriginal - target.QtyUsed,
+                            UnitPrice = @UnitPrice,
+                            CIFValueTHB = @CIFValueTHB,
+                            DutyRate = @DutyRate,
+                            DutyPerUnit = @DutyPerUnit,
+                            TotalDutyVAT = @TotalDutyVAT,
+                            ImportTaxIncId = @ImportTaxIncId,
+                            BOICardNo = @BOICardNo,
+                            ProductionFormulaNo = @ProductionFormulaNo,
+                            ExpiryDate = @ExpiryDate
                     WHEN NOT MATCHED THEN
                         INSERT (ImportDeclarNo, ImportItemNo, ImportDate, PrivilegeType,
                                 RawMaterialCode, ProductCode, ProductDescription, Unit,
@@ -564,6 +545,37 @@ public class ImportExcelService : IImportExcelService
                 return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// อ่านค่าวันที่จาก Excel → return format dd/MM/yyyy (ค.ศ.) เสมอ
+    /// รองรับ: DateTime object, OLE serial number (double), string dd/MM/yyyy
+    /// </summary>
+    private static string? GetDateString(IExcelDataReader reader, int index)
+    {
+        if (index >= reader.FieldCount) return null;
+        var value = reader.GetValue(index);
+        if (value == null) return null;
+
+        if (value is DateTime dt)
+            return dt.ToString("dd/MM/yyyy");
+
+        if (value is double dbl && dbl > 0 && dbl < 2958466)
+        {
+            try { return DateTime.FromOADate(dbl).ToString("dd/MM/yyyy"); }
+            catch { /* fall through */ }
+        }
+
+        var str = value.ToString()?.Trim();
+        if (string.IsNullOrEmpty(str)) return null;
+
+        if (DateTime.TryParseExact(str, "dd/MM/yyyy", null, System.Globalization.DateTimeStyles.None, out _))
+            return str;
+
+        if (DateTime.TryParse(str, out var parsed))
+            return parsed.ToString("dd/MM/yyyy");
+
+        return str;
     }
 
     private static decimal? GetDecimal(IExcelDataReader reader, int index)

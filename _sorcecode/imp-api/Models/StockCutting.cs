@@ -28,6 +28,9 @@ public class StockCutting
     public decimal? DutyPerUnit { get; set; }
     public decimal? DutyRefund { get; set; }
 
+    // Document
+    public string? BatchDocNo { get; set; }
+
     // Status
     public string Status { get; set; } = "PENDING";
 
@@ -36,4 +39,9 @@ public class StockCutting
     public DateTime CreatedDate { get; set; }
     public string? ConfirmedBy { get; set; }
     public DateTime? ConfirmedDate { get; set; }
+
+    // From JOIN with stock_m29_lot (not persisted in stock_m29_batch)
+    public string? ImportDeclarNo { get; set; }
+    public int ImportItemNo { get; set; }
+    public DateTime? ImportDate { get; set; }
 }
